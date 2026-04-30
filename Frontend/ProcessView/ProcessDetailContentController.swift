@@ -262,8 +262,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     private var configuredRowLimit: Int?
     private var currentScrollOffset: CGFloat = 0
     private var displayedRowCount: Int = 0
-    private var windowHeaderHeight: CGFloat = 0
-
     private var selectedPID: Int?
     private var currentDetailSnapshot: ProcessDetailSnapshot?
     private var currentDetailStreamEntry: ProcessEntry?
@@ -907,11 +905,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     func setWindowActive(_ isActive: Bool) {
         if isWindowActive == isActive { return }
         isWindowActive = isActive
-    }
-
-    func setHeaderHeight(_ headerHeight: CGFloat) {
-        windowHeaderHeight = headerHeight
-        layoutLayers()
     }
 
     func resize(width: Int, height: Int) {
@@ -1829,8 +1822,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
 
         let availableWidth = root.bounds.width
         let availableHeight = root.bounds.height
-        let topInset = windowHeaderHeight
-        let contentHeight = max(availableHeight - topInset, 0)
+        let contentHeight = availableHeight
 
         detailContainer.frame = CGRect(x: 0,
                                        y: 0,
@@ -3457,9 +3449,6 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
 
         case .windowActiveUpdate(let isActive):
             setWindowActive(isActive)
-
-        case .headerMetricsUpdate(let headerHeight):
-            setHeaderHeight(headerHeight)
 
         case .copySelectedPasteboardRequest(let requestId):
             outerframeHost.sendCopySelectedPasteboardResponse(requestId: requestId, items: [])

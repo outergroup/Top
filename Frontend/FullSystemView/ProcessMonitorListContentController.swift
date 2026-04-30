@@ -79,8 +79,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
     private var currentSnapshotIndex: UInt64 = 0
 
-    private var windowHeaderHeight: CGFloat = 0
-
     private static let viewportAnnouncementDelayNanoseconds: UInt64 = 16_000_000
     private static let selectionValueLocale = Locale(identifier: "en_US_POSIX")
 
@@ -756,11 +754,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             model.isTableFirstResponder = tableIsFirstResponder
             processTable?.updateSelectionAppearance()
         }
-    }
-
-    func setHeaderHeight(_ headerHeight: CGFloat) {
-        windowHeaderHeight = headerHeight
-        layoutLayers()
     }
 
     func resize(width: Int, height: Int) {
@@ -1745,7 +1738,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             desiredMetricsHeight = 0
         }
         let metricsHeight = max(0, desiredMetricsHeight)
-        let contentTopY = max(availableHeight - windowHeaderHeight, metricsHeight)
+        let contentTopY = availableHeight
         let commandBarY = max(metricsHeight, contentTopY - commandBarTopInset - commandBarHeight)
         let tableTopY = max(metricsHeight, commandBarY - commandBarBottomSpacing)
         let tableHeight = max(tableTopY - metricsHeight, 0)
@@ -3523,10 +3516,6 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
             cleanup()
             retainedSelf = nil
             exit(0)
-
-        case .headerMetricsUpdate(let headerHeight):
-            windowHeaderHeight = headerHeight
-            layoutLayers()
 
         default:
             break

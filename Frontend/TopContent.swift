@@ -36,21 +36,8 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
         switch message {
         case .initializeContent(let arguments):
             let data = arguments.data ?? Data()
-            var width: CGFloat = 0
-            var height: CGFloat = 0
-            var headerHeight: CGFloat = 0
-
-            if let contentShape = arguments.contentShape {
-                switch contentShape {
-                case .rectangle(let incomingWidth, let incomingHeight):
-                    width = incomingWidth
-                    height = incomingHeight
-                case .contentWithHeader(let totalWidth, let totalHeight, let incomingHeaderHeight):
-                    width = totalWidth
-                    height = totalHeight
-                    headerHeight = incomingHeaderHeight
-                }
-            }
+            let width = arguments.contentWidth ?? 0
+            let height = arguments.contentHeight ?? 0
 
             // Configure the OuterframeHost with the received data
             outerframeHost.configure(url: arguments.url ?? "",
@@ -74,7 +61,6 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
                                                                    with: data,
                                                                    size: size,
                                                                    appConnection: appConnection) {
-                    controller.setHeaderHeight(headerHeight)
                     outerframeHost.delegate = controller
                 }
             } else {
@@ -84,7 +70,6 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
                                                                         with: data,
                                                                         size: size,
                                                                         appConnection: appConnection) {
-                    controller.setHeaderHeight(headerHeight)
                     outerframeHost.delegate = controller
                 }
             }
