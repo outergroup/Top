@@ -260,13 +260,13 @@ private extension Data {
     }
 
     mutating func appendUInt16(_ value: UInt16) {
-        var be = value.bigEndian
-        Swift.withUnsafeBytes(of: &be) { append(contentsOf: $0) }
+        var le = value.littleEndian
+        Swift.withUnsafeBytes(of: &le) { append(contentsOf: $0) }
     }
 
     mutating func appendUInt32(_ value: UInt32) {
-        var be = value.bigEndian
-        Swift.withUnsafeBytes(of: &be) { append(contentsOf: $0) }
+        var le = value.littleEndian
+        Swift.withUnsafeBytes(of: &le) { append(contentsOf: $0) }
     }
 
     mutating func appendFloat32(_ value: Float32) {

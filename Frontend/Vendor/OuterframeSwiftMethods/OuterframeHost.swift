@@ -80,7 +80,7 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     // MARK: - SocketToBrowserDelegate
 
-    nonisolated func socketToBrowser(_ socket: SocketToBrowser, didReceiveMessageType typeRaw: UInt8, payload: Data) {
+    nonisolated func socketToBrowser(_ socket: SocketToBrowser, didReceiveMessageType typeRaw: UInt16, payload: Data) {
         Task { @MainActor in
             handleRawMessage(typeRaw: typeRaw, payload: payload)
         }
@@ -92,7 +92,7 @@ final class OuterframeHost: SocketToBrowserDelegate {
         }
     }
 
-    private func handleRawMessage(typeRaw: UInt8, payload: Data) {
+    private func handleRawMessage(typeRaw: UInt16, payload: Data) {
         let message: BrowserToContentMessage
         do {
             message = try BrowserToContentMessage.decode(typeRaw: typeRaw, payload: payload)

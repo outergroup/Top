@@ -4408,19 +4408,23 @@ static void queue_outer_descriptor(StreamClient *client, const char *query) {
     size_t plugin_len = build_outer_plugin_payload(query, plugin_data, sizeof(plugin_data));
 
     size_t path_len = strlen(kBundleUrlPath);
-    size_t total_len = 1 + 2 + path_len + plugin_len;
+    size_t total_len = 4 + 1 + 2 + path_len + plugin_len;
     unsigned char *payload = malloc(total_len);
     if (!payload) {
         queue_plain_text_response(client, 500, "out of memory\n", true);
         return;
     }
 
-    payload[0] = 0;  // format version
-    payload[1] = (unsigned char)((path_len >> 8) & 0xff);
-    payload[2] = (unsigned char)(path_len & 0xff);
-    memcpy(payload + 3, kBundleUrlPath, path_len);
+    payload[0] = 'O';
+    payload[1] = 'U';
+    payload[2] = 'T';
+    payload[3] = 'R';
+    payload[4] = 0;
+    payload[5] = (unsigned char)(path_len & 0xff);
+    payload[6] = (unsigned char)((path_len >> 8) & 0xff);
+    memcpy(payload + 7, kBundleUrlPath, path_len);
     if (plugin_len > 0) {
-        memcpy(payload + 3 + path_len, plugin_data, plugin_len);
+        memcpy(payload + 7 + path_len, plugin_data, plugin_len);
     }
 
     queue_response(client, 200, "OK", "application/vnd.outerframe",
