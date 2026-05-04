@@ -7,7 +7,7 @@ protocol SingleLineTextInputControllerDelegate: AnyObject {
 }
 
 final class SingleLineTextInputController<DelegateClass: SingleLineTextInputControllerDelegate> {
-    let identifier: String
+    let identifier: UUID
     weak var delegate: DelegateClass?
     var onSubmit: (() -> Void)?
 
@@ -17,7 +17,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
     private(set) var isFocused: Bool
     private let acceptedPasteboardTypeIdentifiers: [String]
 
-    init(identifier: String,
+    init(identifier: UUID,
          initialText: String = "",
          acceptedPasteboardTypeIdentifiers: [String] = [NSPasteboard.PasteboardType.string.rawValue]) {
         self.identifier = identifier

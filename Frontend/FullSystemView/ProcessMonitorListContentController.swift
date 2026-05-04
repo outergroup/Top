@@ -82,7 +82,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     private static let selectionValueLocale = Locale(identifier: "en_US_POSIX")
 
     init?(outerframeHost: OuterframeHost, appearance: NSAppearance, windowIsActive: Bool, with data: Data, size: CGSize, appConnection hostAppConnection: OuterframeAppConnection) {
-        self.searchFieldInputController = .init(identifier: Self.searchFieldIdentifier)
+        self.searchFieldInputController = .init(identifier: Self.searchFieldID)
         self.model = ProcessMonitorListModel(appearance: appearance)
 
         model.selection = .range(range: .moving(ago: Self.defaultTimeWindowDuration))
@@ -1074,14 +1074,14 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         }
     }
 
-    func setCursorPosition(fieldId: String, position: Int, modifySelection: Bool) {
-        guard fieldId == Self.searchFieldIdentifier else { return }
+    func setCursorPosition(fieldID: UUID, position: Int, modifySelection: Bool) {
+        guard fieldID == Self.searchFieldID else { return }
         focusSearchField()
         searchFieldInputController.setCursorPosition(position, modifySelection: modifySelection)
     }
 
-    func textInputFocus(fieldId: String, hasFocus: Bool) {
-        guard fieldId == Self.searchFieldIdentifier else { return }
+    func textInputFocus(fieldID: UUID, hasFocus: Bool) {
+        guard fieldID == Self.searchFieldID else { return }
         if hasFocus {
             focusSearchField()
         } else {
@@ -1150,8 +1150,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             search.textLayer.foregroundColor = NSColor.textColor.cgColor
             search.selectionLayer.backgroundColor = (searchFieldInputController.isFocused && model.isWindowActive ?
                                                      NSColor.selectedTextBackgroundColor.cgColor : NSColor.unemphasizedSelectedTextBackgroundColor.withAlphaComponent(isLightTheme ? 0.75 : 0.9).cgColor)
-            search.caretLayer.backgroundColor = NSColor.keyboardFocusIndicatorColor.cgColor
-
             quitDialog?.updateAppearance()
             cpuChart?.updateAppearance()
         }
@@ -1838,12 +1836,15 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         let placeholderLayer: CATextLayer
         let textLayer: CATextLayer
         let selectionLayer: CALayer
-        let caretLayer: CALayer
         let symbolName: String
         let clearSymbolName: String
     }
 
-    private static let searchFieldIdentifier = "processMonitorSearchField"
+    private static let searchFieldID = UUID(uuid: (0x5B, 0x3A, 0x64, 0x42,
+                                                  0xC6, 0x64,
+                                                  0x4F, 0x4D,
+                                                  0xA1, 0xA4,
+                                                  0x0C, 0x3E, 0x40, 0xD5, 0xE7, 0x91))
     private let searchFieldInputController: SingleLineTextInputController<ProcessMonitorListContentController>
     private var lastSearchFilterText: String = ""
     private var restoreSearchFieldFocusOnWindowActivation = false
@@ -1953,13 +1954,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         textLayer.isHidden = true
         container.addSublayer(textLayer)
 
-        let caretLayer = CALayer()
-        caretLayer.backgroundColor = CGColor.clear
-        caretLayer.cornerRadius = searchFieldCaretWidth / 2
-        caretLayer.isHidden = true
-        caretLayer.zPosition = 5
-        container.addSublayer(caretLayer)
-
         return CommandBarSearchField(container: container,
                                      backgroundLayer: background,
                                      iconLayer: iconLayer,
@@ -1968,7 +1962,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                                      placeholderLayer: placeholderLayer,
                                      textLayer: textLayer,
                                      selectionLayer: selectionLayer,
-                                     caretLayer: caretLayer,
                                      symbolName: symbolName,
                                      clearSymbolName: searchFieldClearSymbolName)
     }
@@ -2117,7 +2110,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             search.placeholderLayer.frame = .zero
             search.textLayer.frame = .zero
             search.selectionLayer.frame = .zero
-            search.caretLayer.frame = .zero
         } else {
             let searchWidth = desiredWidth
             let searchX = max(currentX, availableWidth - commandBarHorizontalInset - searchWidth)
@@ -2187,7 +2179,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             field.placeholderLayer.frame = .zero
             field.textLayer.frame = .zero
             field.selectionLayer.frame = .zero
-            field.caretLayer.frame = .zero
             return
         }
         field.container.isHidden = false
@@ -2247,11 +2238,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                                             width: 0,
                                             height: textHeight)
         field.selectionLayer.cornerRadius = 0
-        field.caretLayer.frame = CGRect(x: textStart,
-                                        y: textY,
-                                        width: max(searchFieldCaretWidth, 1 / field.caretLayer.contentsScale),
-                                        height: textHeight)
-        field.caretLayer.contentsScale = field.textLayer.contentsScale
     }
 
     private func updateSearchFieldDisplay() {
@@ -2274,37 +2260,14 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         layoutSearchField(field, frame: field.container.frame)
 
         let textFrame = field.textLayer.frame
-        let caretWidth = max(searchFieldCaretWidth, 1 / max(field.caretLayer.contentsScale, 1))
-        let caretHeight = textFrame.height
-        let caretBaseX = textFrame.minX
-        let caretBaseY = textFrame.minY
+        let textBaseX = textFrame.minX
+        let textBaseY = textFrame.minY
+        let textHeight = textFrame.height
         let maxWidth = max(textFrame.width, 0)
         let backgroundWidth = field.backgroundLayer.bounds.width
-        let maxCaretX = backgroundWidth - caretWidth
         var cachedLine: CTLine?
         if !text.isEmpty && maxWidth > 0 {
             cachedLine = makeSearchFieldLine(for: text)
-        }
-
-        if isFocused {
-            field.caretLayer.isHidden = false
-            let caretOffset: CGFloat
-            if let line = cachedLine {
-                caretOffset = offsetForSearchFieldCharacter(line: line,
-                                                            text: text,
-                                                            index: searchFieldInputController.cursorPosition,
-                                                            maxWidth: maxWidth)
-            } else {
-                caretOffset = 0
-            }
-            let proposedX = min(max(caretBaseX + caretOffset, caretBaseX), caretBaseX + maxWidth)
-            let limitedX = max(caretBaseX, min(proposedX, maxCaretX))
-            field.caretLayer.frame = CGRect(x: limitedX,
-                                            y: caretBaseY,
-                                            width: caretWidth,
-                                            height: caretHeight)
-        } else {
-            field.caretLayer.isHidden = true
         }
 
         model.effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -2320,24 +2283,24 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                                                text: text,
                                                range: range,
                                                maxWidth: maxWidth)
-                let startX = caretBaseX + offsets.start
-                let endX = caretBaseX + offsets.end
+                let startX = textBaseX + offsets.start
+                let endX = textBaseX + offsets.end
                 let width = max(0, min(endX - startX, maxWidth - offsets.start))
                 let availableWidth = max(0, backgroundWidth - startX)
                 let clampedWidth = min(width, availableWidth)
                 if clampedWidth > 0.5 {
                     field.selectionLayer.isHidden = false
                     field.selectionLayer.frame = CGRect(x: startX,
-                                                        y: caretBaseY,
+                                                        y: textBaseY,
                                                         width: clampedWidth,
-                                                        height: caretHeight)
+                                                        height: textHeight)
                     field.selectionLayer.backgroundColor = selectionColor
                 } else {
                     field.selectionLayer.isHidden = true
                     field.selectionLayer.frame = CGRect(x: startX,
-                                                        y: caretBaseY,
+                                                        y: textBaseY,
                                                         width: 0,
-                                                        height: caretHeight)
+                                                        height: textHeight)
                     field.selectionLayer.backgroundColor = selectionColor
                 }
             } else {
@@ -2349,6 +2312,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                 field.selectionLayer.backgroundColor = selectionColor
             }
         }
+        sendSearchFieldCursorUpdate(cachedLine: cachedLine)
     }
 
     private func updateSearchFieldFocusAppearance() {
@@ -2438,7 +2402,31 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         appConnection.setPasteboardCapabilities(capabilities)
     }
 
-    private func sendSearchFieldCursorUpdate() {
+    private func searchFieldCursorRect(_ field: CommandBarSearchField, cachedLine: CTLine?) -> CGRect {
+        let textFrame = field.textLayer.frame
+        let contentsScale = max(field.textLayer.contentsScale, 1)
+        let cursorWidth = max(searchFieldCaretWidth, 1 / contentsScale)
+        let maxWidth = max(textFrame.width, 0)
+        let offset: CGFloat
+        if let cachedLine, !searchFieldInputController.text.isEmpty && maxWidth > 0 {
+            offset = offsetForSearchFieldCharacter(line: cachedLine,
+                                                   text: searchFieldInputController.text,
+                                                   index: searchFieldInputController.cursorPosition,
+                                                   maxWidth: maxWidth)
+        } else {
+            offset = 0
+        }
+
+        let proposedX = min(max(textFrame.minX + offset, textFrame.minX), textFrame.minX + maxWidth)
+        let maxCursorX = field.backgroundLayer.bounds.width - cursorWidth
+        let limitedX = max(textFrame.minX, min(proposedX, maxCursorX))
+        return CGRect(x: limitedX,
+                      y: textFrame.minY,
+                      width: cursorWidth,
+                      height: textFrame.height)
+    }
+
+    private func sendSearchFieldCursorUpdate(cachedLine: CTLine? = nil) {
         guard let layers = layers else {
             appConnection.sendTextCursorUpdate(cursors: [])
             return
@@ -2448,30 +2436,21 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         let isFocused = searchFieldInputController.isFocused
         let hasSelection = searchFieldInputController.hasSelection
 
-        if isFocused && !hasSelection && !field.caretLayer.isHidden {
-            let caretFrame = field.caretLayer.frame
-            guard let caretSuperlayer = field.caretLayer.superlayer else {
-                appConnection.sendTextCursorUpdate(cursors: [])
-                return
-            }
-
-            // Convert caret position from local coordinates to root layer coordinates
-            let rootPosition = caretSuperlayer.convert(caretFrame.origin, to: layers.rootLayer)
+        if isFocused && !hasSelection {
+            let cursorFrame = searchFieldCursorRect(field, cachedLine: cachedLine)
+            let rootPosition = field.container.convert(cursorFrame.origin, to: layers.rootLayer)
 
             // Convert from CALayer's bottom-left coordinates to top-left coordinates
             // (OuterframeView expects y=0 at top)
             let rootHeight = layers.rootLayer.bounds.height
-            let topLeftY = rootHeight - rootPosition.y - caretFrame.height
-
-            let cursorInfo: [String: Any] = [
-                "fieldId": Self.searchFieldIdentifier,
-                "x": rootPosition.x,
-                "y": topLeftY,
-                "width": caretFrame.width,
-                "height": caretFrame.height,
-                "visible": true
-            ]
-            appConnection.sendTextCursorUpdate(cursors: [cursorInfo])
+            let topLeftY = rootHeight - rootPosition.y - cursorFrame.height
+            let cursor = OuterframeContentTextCursorSnapshot(fieldID: Self.searchFieldID,
+                                                             rectX: Float32(rootPosition.x),
+                                                             rectY: Float32(topLeftY),
+                                                             rectWidth: Float32(cursorFrame.width),
+                                                             rectHeight: Float32(cursorFrame.height),
+                                                             visible: true)
+            appConnection.sendTextCursorUpdate(cursors: [cursor])
         } else {
             appConnection.sendTextCursorUpdate(cursors: [])
         }

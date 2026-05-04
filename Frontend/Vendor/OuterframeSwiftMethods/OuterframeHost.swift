@@ -253,26 +253,9 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     // MARK: - Text Cursor
 
-    func sendTextCursorUpdate(cursors: [[String: Any]]) {
-        var snapshots: [OuterframeContentTextCursorSnapshot] = []
-        for cursor in cursors {
-            guard let fieldId = cursor["fieldId"] as? String,
-                  let rect = cursor["rect"] as? CGRect,
-                  let visible = cursor["visible"] as? Bool else {
-                continue
-            }
-            snapshots.append(OuterframeContentTextCursorSnapshot(
-                fieldId: fieldId,
-                rectX: Float32(rect.origin.x),
-                rectY: Float32(rect.origin.y),
-                rectWidth: Float32(rect.width),
-                rectHeight: Float32(rect.height),
-                visible: visible
-            ))
-        }
-
+    func sendTextCursorUpdate(cursors: [OuterframeContentTextCursorSnapshot]) {
         Task {
-            try? await socket.send(ContentToBrowserMessage.textCursorUpdate(cursors: snapshots).encode())
+            try? await socket.send(ContentToBrowserMessage.textCursorUpdate(cursors: cursors).encode())
         }
     }
 
