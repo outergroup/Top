@@ -66,7 +66,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     // Self-reference to prevent deallocation while socket is open
     private var retainedSelf: ProcessMonitorListContentController?
 
-    private let startPageTitle = "Top"
     private var quitDialog: ProcessQuitDialog?
     private var cpuChart: CPUHistoryChart?
     private var processTable: ProcessTable?
@@ -265,48 +264,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         CATransaction.commit()
 
         startProcessStream()
-
-        appConnection.updatePageMetadata(title: startPageTitle, iconPNGData: nil, iconWidth: 0, iconHeight: 0)
-
-        appConnection.getImage(
-            systemSymbolName: "waveform.path.ecg",
-            pointSize: 18,
-            weight: "regular",
-            scale: 1.0,
-            tintColor: NSColor.controlAccentColor
-        ) { [weak self] data, width, height in
-            Task { @MainActor in
-                guard let self else { return }
-                guard let data = data else { return }
-                self.appConnection.updatePageMetadata(title: nil,
-                                                      iconPNGData: data,
-                                                      iconWidth: width,
-                                                      iconHeight: height)
-            }
-        }
-
-        let tint = NSColor.controlAccentColor
-        appConnection.getImage(
-            systemSymbolName: "waveform.path.ecg",
-            pointSize: 44,
-            weight: "regular",
-            scale: 1.0,
-            tintColor: tint
-        ) { [weak self] data, width, height in
-            Task { @MainActor in
-                guard let self else { return }
-                guard let data else { return }
-                self.appConnection.updateStartPageMetadata(title: nil,
-                                                           iconPNGData: data,
-                                                           iconWidth: width,
-                                                           iconHeight: height)
-            }
-        }
-
-        appConnection.updateStartPageMetadata(title: startPageTitle,
-                                              iconPNGData: nil,
-                                              iconWidth: 0,
-                                              iconHeight: 0)
 
         // Keep self alive until socket closes
         retainedSelf = self

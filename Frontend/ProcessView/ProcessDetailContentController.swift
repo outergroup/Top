@@ -265,7 +265,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     private var selectedPID: Int?
     private var currentDetailSnapshot: ProcessDetailSnapshot?
     private var currentDetailStreamEntry: ProcessEntry?
-    private var hasSentDetailPageMetadata = false
     private var pendingDetailSnapshot: ProcessDetailSnapshot?
     private var urlSession: URLSession?
     private lazy var urlSessionQueue: OperationQueue = {
@@ -462,21 +461,12 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         layoutLayers()
         updateMetaText()
         startStreamingIfPossible()
-        sendInitialPageMetadataIfNeeded()
 
         detailScrollbarController.updateLayout(metrics: detailScrollbarMetrics())
 
         // Keep self alive until socket closes
         retainedSelf = self
     }
-
-    private var pageIconRequestInFlight = false
-    private var hasSentInitialPageMetadata = false
-    private var startPageIconRequestInFlight = false
-    private var hasSentStartPageTitle = false
-    private var startPageIconData: Data?
-    private var startPageIconWidth: UInt32 = 0
-    private var startPageIconHeight: UInt32 = 0
 
     private let startPageTitle = "Top"
 
@@ -613,38 +603,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     private let detailMinimumHeight: CGFloat = 220
     private let detailButtonSpacing: CGFloat = 12
 
-    private func requestPageIconIfPossible() {
-        guard !pageIconRequestInFlight else { return }
-
-        pageIconRequestInFlight = true
-        let tint = NSColor.controlAccentColor
-        outerframeHost.getImage(
-            systemSymbolName: "waveform.path.ecg",
-            pointSize: 18,
-            weight: "regular",
-            scale: 1.0,
-            tintColor: tint
-        ) { [weak self] data, width, height in
-            Task { @MainActor in
-                guard let self else { return }
-                self.pageIconRequestInFlight = false
-                guard let data = data else { return }
-                self.outerframeHost.updatePageMetadata(title: nil,
-                                                       iconPNGData: data,
-                                                       iconWidth: width,
-                                                       iconHeight: height)
-            }
-        }
-    }
-
-    private func sendInitialPageMetadataIfNeeded() {
-        if !hasSentInitialPageMetadata {
-            outerframeHost.updatePageMetadata(title: startPageTitle, iconPNGData: nil, iconWidth: 0, iconHeight: 0)
-            hasSentInitialPageMetadata = true
-        }
-        requestPageIconIfPossible()
-    }
-
     func cleanup() {
         cancelStream(triggerReconnect: false)
         cancelDetailPolling()
@@ -663,13 +621,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         reconnectAttempts = 0
         maintainStream = false
         streamBuffer.removeAll(keepingCapacity: false)
-        pageIconRequestInFlight = false
-        hasSentInitialPageMetadata = false
-        startPageIconRequestInFlight = false
-        hasSentStartPageTitle = false
-        startPageIconData = nil
-        startPageIconWidth = 0
-        startPageIconHeight = 0
         quitConfirmationAlert?.overlayLayer.removeFromSuperlayer()
         quitConfirmationAlert = nil
         detailOpenFileEntries = []
@@ -678,7 +629,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         detailOpenFilesHasRealEntries = false
         currentDetailSnapshot = nil
        currentDetailStreamEntry = nil
-       hasSentDetailPageMetadata = false
        pendingDetailSnapshot = nil
     }
 
@@ -974,7 +924,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         detailAPIEndpoint = nil
         currentDetailSnapshot = nil
         currentDetailStreamEntry = nil
-        hasSentDetailPageMetadata = false
         currentScrollOffset = 0
         pendingDetailSnapshot = nil
 
@@ -1075,7 +1024,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             openFilesError: initialSnapshot?.openFilesError
         )
         currentDetailStreamEntry = nil
-        hasSentDetailPageMetadata = false
         pendingDetailSnapshot = nil
         updateDetailDisplayedValues()
 
@@ -1130,7 +1078,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             return
         }
         apiEndpoint = newEndpoint
-        hasSentStartPageTitle = false
         // In detail mode, we use polling instead of streaming since the backend
         // only allows one stream client and the list view is typically connected.
         // The polling is started via fetchDetailInfoIfNeeded() after config is applied.
@@ -1276,14 +1223,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             setDetailMetric(.launched, value: launch)
         } else {
             setDetailMetric(.launched, value: "—")
-        }
-
-        if !hasSentDetailPageMetadata {
-            outerframeHost.updatePageMetadata(title: titleText,
-                                              iconPNGData: nil,
-                                              iconWidth: 0,
-                                              iconHeight: 0)
-            hasSentDetailPageMetadata = true
         }
 
         performWithoutAnimation {
@@ -1558,7 +1497,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
                 )
 
                 self.currentDetailSnapshot = snapshot
-                self.hasSentDetailPageMetadata = false
                 self.showStatus(nil)
                 self.updateDetailDisplayedValues()
                 self.scheduleNextDetailPoll()

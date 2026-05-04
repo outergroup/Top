@@ -251,30 +251,6 @@ final class OuterframeHost: SocketToBrowserDelegate {
         }
     }
 
-    // MARK: - Page Metadata
-
-    func updatePageMetadata(title: String?, iconPNGData: Data?, iconWidth: UInt32, iconHeight: UInt32) {
-        Task {
-            try? await socket.send(ContentToBrowserMessage.pageMetadataUpdate(
-                title: title,
-                iconPNGData: iconPNGData,
-                iconWidth: iconWidth,
-                iconHeight: iconHeight
-            ).encode())
-        }
-    }
-
-    func updateStartPageMetadata(title: String?, iconPNGData: Data?, iconWidth: UInt32, iconHeight: UInt32) {
-        Task {
-            try? await socket.send(ContentToBrowserMessage.startPageMetadataUpdate(
-                title: title,
-                iconPNGData: iconPNGData,
-                iconWidth: iconWidth,
-                iconHeight: iconHeight
-            ).encode())
-        }
-    }
-
     // MARK: - Text Cursor
 
     func sendTextCursorUpdate(cursors: [[String: Any]]) {
