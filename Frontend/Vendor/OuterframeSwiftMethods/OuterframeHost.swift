@@ -55,8 +55,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
     // Display link callback management
     private var displayLinkCallbacks: [UUID: @MainActor @Sendable (CFTimeInterval) -> Void] = [:]
     private var pendingDisplayLinkCallbacks: [UUID: @MainActor @Sendable (CFTimeInterval) -> Void] = [:]
-    private var callbackIdToBrowserId: [UUID: UUID] = [:]
-    private var browserIdToCallbackId: [UUID: UUID] = [:]
+    private var callbackIDToBrowserID: [UUID: UUID] = [:]
+    private var browserIDToCallbackID: [UUID: UUID] = [:]
 
     // SF Symbol request tracking
     private var imageRequests: [UUID: (Data?, UInt32, UInt32) -> Void] = [:]
@@ -107,16 +107,16 @@ final class OuterframeHost: SocketToBrowserDelegate {
             handleDisplayLinkFired(targetTimestamp: targetTimestamp)
             return
 
-        case .displayLinkCallbackRegistered(let callbackId, let browserCallbackId):
-            handleDisplayLinkCallbackRegistered(callbackId: callbackId, browserCallbackId: browserCallbackId)
+        case .displayLinkCallbackRegistered(let callbackID, let browserCallbackID):
+            handleDisplayLinkCallbackRegistered(callbackID: callbackID, browserCallbackID: browserCallbackID)
             return
 
-        case .imageWithSystemSymbolName(let requestId, let imageData, let width, let height, _, _):
-            handleImageWithSystemSymbolNameResponse(requestId: requestId, imageData: imageData, width: width, height: height)
+        case .imageWithSystemSymbolName(let requestID, let imageData, let width, let height, _, _):
+            handleImageWithSystemSymbolNameResponse(requestID: requestID, imageData: imageData, width: width, height: height)
             return
 
-        case .accessibilitySnapshotRequest(let requestId):
-            handleAccessibilitySnapshotRequest(requestId: requestId)
+        case .accessibilitySnapshotRequest(let requestID):
+            handleAccessibilitySnapshotRequest(requestID: requestID)
             return
 
         default:
@@ -173,34 +173,34 @@ final class OuterframeHost: SocketToBrowserDelegate {
     // MARK: - Display Link
 
     func registerDisplayLinkCallback(_ callback: @MainActor @Sendable @escaping (CFTimeInterval) -> Void) -> UUID {
-        let callbackId = UUID()
-        pendingDisplayLinkCallbacks[callbackId] = callback
+        let callbackID = UUID()
+        pendingDisplayLinkCallbacks[callbackID] = callback
 
         Task {
-            try? await socket.send(ContentToBrowserMessage.startDisplayLink(callbackId: callbackId).encode())
+            try? await socket.send(ContentToBrowserMessage.startDisplayLink(callbackID: callbackID).encode())
         }
 
-        return callbackId
+        return callbackID
     }
 
-    func stopDisplayLinkCallback(_ callbackId: UUID) {
-        pendingDisplayLinkCallbacks.removeValue(forKey: callbackId)
-        displayLinkCallbacks.removeValue(forKey: callbackId)
+    func stopDisplayLinkCallback(_ callbackID: UUID) {
+        pendingDisplayLinkCallbacks.removeValue(forKey: callbackID)
+        displayLinkCallbacks.removeValue(forKey: callbackID)
 
-        if let browserId = callbackIdToBrowserId.removeValue(forKey: callbackId) {
-            browserIdToCallbackId.removeValue(forKey: browserId)
+        if let browserID = callbackIDToBrowserID.removeValue(forKey: callbackID) {
+            browserIDToCallbackID.removeValue(forKey: browserID)
             Task {
-                try? await socket.send(ContentToBrowserMessage.stopDisplayLink(browserCallbackId: browserId).encode())
+                try? await socket.send(ContentToBrowserMessage.stopDisplayLink(browserCallbackID: browserID).encode())
             }
         }
     }
 
-    private func handleDisplayLinkCallbackRegistered(callbackId: UUID, browserCallbackId: UUID) {
-        callbackIdToBrowserId[callbackId] = browserCallbackId
-        browserIdToCallbackId[browserCallbackId] = callbackId
+    private func handleDisplayLinkCallbackRegistered(callbackID: UUID, browserCallbackID: UUID) {
+        callbackIDToBrowserID[callbackID] = browserCallbackID
+        browserIDToCallbackID[browserCallbackID] = callbackID
 
-        if let callback = pendingDisplayLinkCallbacks.removeValue(forKey: callbackId) {
-            displayLinkCallbacks[callbackId] = callback
+        if let callback = pendingDisplayLinkCallbacks.removeValue(forKey: callbackID) {
+            displayLinkCallbacks[callbackID] = callback
         }
     }
 
@@ -218,8 +218,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
                   scale: CGFloat,
                   tintColor: NSColor,
                   completion: @escaping (Data?, UInt32, UInt32) -> Void) {
-        let requestId = UUID()
-        imageRequests[requestId] = completion
+        let requestID = UUID()
+        imageRequests[requestID] = completion
 
         var red: CGFloat = 0
         var green: CGFloat = 0
@@ -232,7 +232,7 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
         Task {
             try? await socket.send(ContentToBrowserMessage.getImageWithSystemSymbolName(
-                requestId: requestId,
+                requestID: requestID,
                 symbolName: systemSymbolName,
                 pointSize: Float32(pointSize),
                 weight: weight,
@@ -245,8 +245,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
         }
     }
 
-    private func handleImageWithSystemSymbolNameResponse(requestId: UUID, imageData: Data?, width: UInt32, height: UInt32) {
-        if let completion = imageRequests.removeValue(forKey: requestId) {
+    private func handleImageWithSystemSymbolNameResponse(requestID: UUID, imageData: Data?, width: UInt32, height: UInt32) {
+        if let completion = imageRequests.removeValue(forKey: requestID) {
             completion(imageData, width, height)
         }
     }
@@ -310,12 +310,12 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     // MARK: - Accessibility
 
-    private func handleAccessibilitySnapshotRequest(requestId: UUID) {
+    private func handleAccessibilitySnapshotRequest(requestID: UUID) {
         let snapshot = delegate?.outerframeHostAccessibilitySnapshot(self)
             ?? OuterframeAccessibilitySnapshot.notImplementedSnapshot()
         Task {
             try? await socket.send(ContentToBrowserMessage.accessibilitySnapshotResponse(
-                requestId: requestId,
+                requestID: requestID,
                 snapshotData: snapshot.serializedData()
             ).encode())
         }
@@ -324,10 +324,10 @@ final class OuterframeHost: SocketToBrowserDelegate {
     // MARK: - Pasteboard
 
     /// Sends a copy selected pasteboard response to the browser.
-    func sendCopySelectedPasteboardResponse(requestId: UUID, items: [OuterframeContentPasteboardItem]) {
+    func sendCopySelectedPasteboardResponse(requestID: UUID, items: [OuterframeContentPasteboardItem]) {
         Task {
             try? await socket.send(ContentToBrowserMessage.copySelectedPasteboardResponse(
-                requestId: requestId,
+                requestID: requestID,
                 items: items
             ).encode())
         }

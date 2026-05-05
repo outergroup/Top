@@ -3388,8 +3388,8 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
         case .windowActiveUpdate(let isActive):
             setWindowActive(isActive)
 
-        case .copySelectedPasteboardRequest(let requestId):
-            outerframeHost.sendCopySelectedPasteboardResponse(requestId: requestId, items: [])
+        case .copySelectedPasteboardRequest(let requestID):
+            outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID, items: [])
 
         case .pasteboardContentDelivered:
             break

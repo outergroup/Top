@@ -3440,8 +3440,8 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .windowActiveUpdate(let isActive):
             setWindowActive(isActive)
 
-        case .copySelectedPasteboardRequest(let requestId):
-            outerframeHost.sendCopySelectedPasteboardResponse(requestId: requestId,
+        case .copySelectedPasteboardRequest(let requestID):
+            outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID,
                                                               items: pasteboardItemsForCopy())
 
         case .pasteboardContentDelivered(let items):

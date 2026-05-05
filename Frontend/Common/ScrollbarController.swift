@@ -95,7 +95,7 @@ final class ScrollbarController<Delegate: ScrollbarControllerDelegate> {
     private var animationStartOffset: CGFloat = 0
     private var animationStartTime: CFTimeInterval = 0
     private let animationDuration: CFTimeInterval = 0.18
-    private var displayLinkCallbackId: UUID?
+    private var displayLinkCallbackID: UUID?
 
     init(appConnection: OuterframeHost,
          viewportLayer: CALayer,
@@ -367,17 +367,17 @@ final class ScrollbarController<Delegate: ScrollbarControllerDelegate> {
     }
 
     private func ensureDisplayLinkActive() {
-        guard displayLinkCallbackId == nil else { return }
-        displayLinkCallbackId = appConnection.registerDisplayLinkCallback { [weak self] timestamp in
+        guard displayLinkCallbackID == nil else { return }
+        displayLinkCallbackID = appConnection.registerDisplayLinkCallback { [weak self] timestamp in
             self?.handleDisplayLinkTick(timestamp: timestamp)
         }
     }
 
     private func stopDisplayLinkIfNeeded(force: Bool = false) {
-        guard let callbackId = displayLinkCallbackId else { return }
+        guard let callbackID = displayLinkCallbackID else { return }
         if !force && animationTargetOffset != nil { return }
-        appConnection.stopDisplayLinkCallback(callbackId)
-        displayLinkCallbackId = nil
+        appConnection.stopDisplayLinkCallback(callbackID)
+        displayLinkCallbackID = nil
     }
 
     private func handleDisplayLinkTick(timestamp: CFTimeInterval) {
