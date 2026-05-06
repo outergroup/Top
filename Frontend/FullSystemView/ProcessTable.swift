@@ -11,7 +11,7 @@ import AppKit.NSAppearance
 // - updateSelectionAppearance()
 // - appearanceDidChange()
 // - updateProcessTableRows(startIndex:totalCount:entries:additionalEntries:snapshotIndex:)
-// - scrollWheel(delta:at:isPrecise:rootLayer:)
+// - scrollWheel(delta:at:hasPreciseScrollingDeltas:rootLayer:)
 // - mouseDown(at:modifierFlags:clickCount:rootLayer:)
 // - mouseDragged(at:modifierFlags:rootLayer:)
 // - mouseUp(at:modifierFlags:rootLayer:)
@@ -1136,13 +1136,13 @@ final class ProcessTable {
 
     func scrollWheel(delta: CGPoint,
                      at point: CGPoint,
-                     isPrecise: Bool,
+                     hasPreciseScrollingDeltas: Bool,
                      rootLayer: CALayer) -> Bool {
 
         let pointInViewport = listLayers.rowsViewportLayer.convert(point, from: rootLayer)
         guard listLayers.rowsViewportLayer.bounds.contains(pointInViewport) else { return false }
 
-        let multiplier: CGFloat = isPrecise ? 1.0 : rowHeight
+        let multiplier: CGFloat = hasPreciseScrollingDeltas ? 1.0 : rowHeight
         let adjustedDeltaY = delta.y * multiplier
         if adjustedDeltaY != 0 {
             rowsScrollbarController.cancelAnimation()
@@ -1545,7 +1545,7 @@ final class ProcessTable {
         mainController?.onSelectionChanged()
     }
 
-    func keyDown(keyCode: UInt16, characters: String, charactersIgnoringModifiers: String, modifierFlags: NSEvent.ModifierFlags, isRepeat: Bool) -> Bool {
+    func keyDown(keyCode: UInt16, characters: String, charactersIgnoringModifiers: String, modifierFlags: NSEvent.ModifierFlags, isARepeat: Bool) -> Bool {
 
         switch keyCode {
         case 125: // Down arrow

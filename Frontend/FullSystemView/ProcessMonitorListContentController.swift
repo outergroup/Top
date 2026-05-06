@@ -1054,10 +1054,9 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                            modifierFlags _: NSEvent.ModifierFlags,
                            phase _: NSEvent.Phase,
                            momentumPhase _: NSEvent.Phase,
-                           isMomentum _: Bool,
-                           isPrecise: Bool) {
+                           hasPreciseScrollingDeltas: Bool) {
         guard let layers = layers else { return }
-        _ = processTable?.scrollWheel(delta: delta, at: point, isPrecise: isPrecise, rootLayer: layers.rootLayer)
+        _ = processTable?.scrollWheel(delta: delta, at: point, hasPreciseScrollingDeltas: hasPreciseScrollingDeltas, rootLayer: layers.rootLayer)
     }
 
     // MARK: - Text Input Handling (independent of any particular control)
@@ -1089,12 +1088,12 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         }
     }
 
-    func keyDown(keyCode: UInt16, characters: String, charactersIgnoringModifiers: String, modifierFlags: NSEvent.ModifierFlags, isRepeat: Bool) {
+    func keyDown(keyCode: UInt16, characters: String, charactersIgnoringModifiers: String, modifierFlags: NSEvent.ModifierFlags, isARepeat: Bool) {
         if searchFieldInputController.isFocused {
             return
         }
 
-        _ = processTable?.keyDown(keyCode: keyCode, characters: characters, charactersIgnoringModifiers: charactersIgnoringModifiers, modifierFlags: modifierFlags, isRepeat: isRepeat)
+        _ = processTable?.keyDown(keyCode: keyCode, characters: characters, charactersIgnoringModifiers: charactersIgnoringModifiers, modifierFlags: modifierFlags, isARepeat: isARepeat)
     }
 
     // MARK: Colors
@@ -3371,25 +3370,35 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .resizeContent(let width, let height):
             resize(width: Int(width), height: Int(height))
 
-        case .mouseEvent(let kind, let x, let y, let modifierFlags, let clickCount):
+        case .mouseMoved(let x, let y, let modifierFlags):
             let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
             let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            switch kind {
-            case .mouseMoved:
-                mouseMoved(to: point, modifierFlags: flags)
-            case .mouseDown:
-                mouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
-            case .mouseUp:
-                mouseUp(at: point, modifierFlags: flags)
-            case .mouseDragged:
-                mouseDragged(to: point, modifierFlags: flags)
-            case .rightMouseDown:
-                rightMouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
-            case .rightMouseUp:
-                break
-            }
+            mouseMoved(to: point, modifierFlags: flags)
 
-        case .scrollWheelEvent(let x, let y, let deltaX, let deltaY, let modifierFlags, let phase, let momentumPhase, let isMomentum, let isPrecise):
+        case .mouseDown(let x, let y, let modifierFlags, let clickCount):
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+            mouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
+
+        case .mouseUp(let x, let y, let modifierFlags):
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+            mouseUp(at: point, modifierFlags: flags)
+
+        case .mouseDragged(let x, let y, let modifierFlags):
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+            mouseDragged(to: point, modifierFlags: flags)
+
+        case .rightMouseDown(let x, let y, let modifierFlags, let clickCount):
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+            rightMouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
+
+        case .rightMouseUp:
+            break
+
+        case .scrollWheelEvent(let x, let y, let deltaX, let deltaY, let modifierFlags, let phase, let momentumPhase, let hasPreciseScrollingDeltas):
             let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
             let delta = CGPoint(x: CGFloat(deltaX), y: CGFloat(deltaY))
             let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
@@ -3398,16 +3407,15 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
                         modifierFlags: flags,
                         phase: NSEvent.Phase(rawValue: UInt(phase)),
                         momentumPhase: NSEvent.Phase(rawValue: UInt(momentumPhase)),
-                        isMomentum: isMomentum,
-                        isPrecise: isPrecise)
+                        hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
 
-        case .keyDown(let keyCode, let characters, let charactersIgnoringModifiers, let modifierFlags, let isRepeat):
+        case .keyDown(let keyCode, let characters, let charactersIgnoringModifiers, let modifierFlags, let isARepeat):
             let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
             keyDown(keyCode: keyCode,
                     characters: characters,
                     charactersIgnoringModifiers: charactersIgnoringModifiers,
                     modifierFlags: flags,
-                    isRepeat: isRepeat)
+                    isARepeat: isARepeat)
 
         case .keyUp:
             break

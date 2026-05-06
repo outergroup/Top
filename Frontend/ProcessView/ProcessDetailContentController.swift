@@ -899,14 +899,13 @@ final class ProcessDetailContentController: NSObject, TopContentController {
                            modifierFlags _: NSEvent.ModifierFlags,
                            phase _: NSEvent.Phase,
                            momentumPhase _: NSEvent.Phase,
-                           isMomentum _: Bool,
-                           isPrecise: Bool) {
+                           hasPreciseScrollingDeltas: Bool) {
 
         let root = layers.rootLayer
         let viewport = layers.openFiles.viewportLayer
         let pointInViewport = viewport.convert(point, from: root)
         guard viewport.bounds.contains(pointInViewport) else { return }
-        let multiplier: CGFloat = isPrecise ? 1.0 : detailOpenFilesRowHeight
+        let multiplier: CGFloat = hasPreciseScrollingDeltas ? 1.0 : detailOpenFilesRowHeight
         let adjustedDeltaY = delta.y * multiplier
         guard adjustedDeltaY != 0 else { return }
         detailScrollbarController.cancelAnimation()
@@ -3341,23 +3340,28 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
         case .resizeContent(let width, let height):
             resize(width: Int(width), height: Int(height))
 
-        case .mouseEvent(let kind, let x, let y, let modifierFlags, let clickCount):
+        case .mouseMoved:
+            break
+
+        case .mouseDown(let x, let y, let modifierFlags, let clickCount):
             let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
             let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            switch kind {
-            case .mouseMoved:
-                break
-            case .mouseDown:
-                mouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
-            case .mouseUp:
-                mouseUp(at: point, modifierFlags: flags)
-            case .mouseDragged:
-                mouseDragged(to: point, modifierFlags: flags)
-            case .rightMouseDown, .rightMouseUp:
-                break
-            }
+            mouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
 
-        case .scrollWheelEvent(let x, let y, let deltaX, let deltaY, let modifierFlags, let phase, let momentumPhase, let isMomentum, let isPrecise):
+        case .mouseUp(let x, let y, let modifierFlags):
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+            mouseUp(at: point, modifierFlags: flags)
+
+        case .mouseDragged(let x, let y, let modifierFlags):
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+            mouseDragged(to: point, modifierFlags: flags)
+
+        case .rightMouseDown, .rightMouseUp:
+            break
+
+        case .scrollWheelEvent(let x, let y, let deltaX, let deltaY, let modifierFlags, let phase, let momentumPhase, let hasPreciseScrollingDeltas):
             let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
             let delta = CGPoint(x: CGFloat(deltaX), y: CGFloat(deltaY))
             let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
@@ -3366,8 +3370,7 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
                         modifierFlags: flags,
                         phase: NSEvent.Phase(rawValue: UInt(phase)),
                         momentumPhase: NSEvent.Phase(rawValue: UInt(momentumPhase)),
-                        isMomentum: isMomentum,
-                        isPrecise: isPrecise)
+                        hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
 
         case .keyDown, .keyUp:
             break
