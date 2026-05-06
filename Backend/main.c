@@ -4403,12 +4403,32 @@ static void queue_json_response(StreamClient *client, const char *json, size_t l
     queue_response(client, 200, "OK", "application/json; charset=utf-8", json, len, close_after);
 }
 
+static void write_outer_uint32_le(unsigned char *bytes, uint32_t value) {
+    bytes[0] = (unsigned char)(value & 0xff);
+    bytes[1] = (unsigned char)((value >> 8) & 0xff);
+    bytes[2] = (unsigned char)((value >> 16) & 0xff);
+    bytes[3] = (unsigned char)((value >> 24) & 0xff);
+}
+
+static void write_outer_uint64_le(unsigned char *bytes, uint64_t value) {
+    bytes[0] = (unsigned char)(value & 0xff);
+    bytes[1] = (unsigned char)((value >> 8) & 0xff);
+    bytes[2] = (unsigned char)((value >> 16) & 0xff);
+    bytes[3] = (unsigned char)((value >> 24) & 0xff);
+    bytes[4] = (unsigned char)((value >> 32) & 0xff);
+    bytes[5] = (unsigned char)((value >> 40) & 0xff);
+    bytes[6] = (unsigned char)((value >> 48) & 0xff);
+    bytes[7] = (unsigned char)((value >> 56) & 0xff);
+}
+
 static void queue_outer_descriptor(StreamClient *client, const char *query) {
     char plugin_data[JSON_BUFFER_SIZE];
     size_t plugin_len = build_outer_plugin_payload(query, plugin_data, sizeof(plugin_data));
 
     size_t path_len = strlen(kBundleUrlPath);
-    size_t total_len = 4 + 1 + 2 + path_len + plugin_len;
+    size_t header_len = 40;
+    size_t data_offset = header_len + path_len;
+    size_t total_len = data_offset + plugin_len;
     unsigned char *payload = malloc(total_len);
     if (!payload) {
         queue_plain_text_response(client, 500, "out of memory\n", true);
@@ -4419,12 +4439,14 @@ static void queue_outer_descriptor(StreamClient *client, const char *query) {
     payload[1] = 'U';
     payload[2] = 'T';
     payload[3] = 'R';
-    payload[4] = 0;
-    payload[5] = (unsigned char)(path_len & 0xff);
-    payload[6] = (unsigned char)((path_len >> 8) & 0xff);
-    memcpy(payload + 7, kBundleUrlPath, path_len);
+    write_outer_uint32_le(payload + 4, 1);
+    write_outer_uint64_le(payload + 8, (uint64_t)header_len);
+    write_outer_uint64_le(payload + 16, (uint64_t)path_len);
+    write_outer_uint64_le(payload + 24, (uint64_t)data_offset);
+    write_outer_uint64_le(payload + 32, (uint64_t)plugin_len);
+    memcpy(payload + header_len, kBundleUrlPath, path_len);
     if (plugin_len > 0) {
-        memcpy(payload + 7 + path_len, plugin_data, plugin_len);
+        memcpy(payload + data_offset, plugin_data, plugin_len);
     }
 
     queue_response(client, 200, "OK", "application/vnd.outerframe",
