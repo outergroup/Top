@@ -59,7 +59,7 @@ final class OuterframeHost: SocketToBrowserDelegate {
     private var browserIDToCallbackID: [UUID: UUID] = [:]
 
     // SF Symbol request tracking
-    private var imageRequests: [UUID: (Data?, UInt32, UInt32) -> Void] = [:]
+    private var imageRequests: [UUID: (Data?, UInt32, UInt32, UInt32) -> Void] = [:]
 
     /// Creates an OuterframeHost and starts the socket.
     /// Call `configure()` after receiving the initializeContent message to set context and appearance.
@@ -111,8 +111,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
             handleDisplayLinkCallbackRegistered(callbackID: callbackID, browserCallbackID: browserCallbackID)
             return
 
-        case .imageWithSystemSymbolName(let requestID, let imageData, let width, let height, _, _):
-            handleImageWithSystemSymbolNameResponse(requestID: requestID, imageData: imageData, width: width, height: height)
+        case .imageWithSystemSymbolName(let requestID, let alphaMaskData, let width, let height, let bytesPerRow, _, _):
+            handleImageWithSystemSymbolNameResponse(requestID: requestID, alphaMaskData: alphaMaskData, width: width, height: height, bytesPerRow: bytesPerRow)
             return
 
         case .accessibilitySnapshotRequest(let requestID):
@@ -214,40 +214,26 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     func getImage(systemSymbolName: String,
                   pointSize: CGFloat,
-                  weight: String,
+                  weight: NSFont.Weight,
                   scale: CGFloat,
-                  tintColor: NSColor,
-                  completion: @escaping (Data?, UInt32, UInt32) -> Void) {
+                  completion: @escaping (Data?, UInt32, UInt32, UInt32) -> Void) {
         let requestID = UUID()
         imageRequests[requestID] = completion
-
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var alpha: CGFloat = 1
-
-        if let converted = tintColor.usingColorSpace(.sRGB) {
-            converted.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-        }
 
         Task {
             try? await socket.send(ContentToBrowserMessage.getImageWithSystemSymbolName(
                 requestID: requestID,
                 symbolName: systemSymbolName,
-                pointSize: Float32(pointSize),
-                weight: weight,
-                scale: Float32(scale),
-                tintRed: Float32(red),
-                tintGreen: Float32(green),
-                tintBlue: Float32(blue),
-                tintAlpha: Float32(alpha)
+                pointSize: pointSize,
+                weight: Double(weight.rawValue),
+                scale: scale
             ).encode())
         }
     }
 
-    private func handleImageWithSystemSymbolNameResponse(requestID: UUID, imageData: Data?, width: UInt32, height: UInt32) {
+    private func handleImageWithSystemSymbolNameResponse(requestID: UUID, alphaMaskData: Data?, width: UInt32, height: UInt32, bytesPerRow: UInt32) {
         if let completion = imageRequests.removeValue(forKey: requestID) {
-            completion(imageData, width, height)
+            completion(alphaMaskData, width, height, bytesPerRow)
         }
     }
 
@@ -266,8 +252,7 @@ final class OuterframeHost: SocketToBrowserDelegate {
             try? await socket.send(ContentToBrowserMessage.openNewWindow(
                 url: url.absoluteString,
                 displayString: displayString,
-                preferredWidth: preferredSize.map { Float32($0.width) },
-                preferredHeight: preferredSize.map { Float32($0.height) }
+                preferredSize: preferredSize
             ).encode())
         }
     }
@@ -280,8 +265,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
         Task {
             try? await socket.send(ContentToBrowserMessage.showContextMenu(
                 attributedTextData: data,
-                locationX: Float32(location.x),
-                locationY: Float32(location.y)
+                locationX: location.x,
+                locationY: location.y
             ).encode())
         }
     }
@@ -294,8 +279,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
         Task {
             try? await socket.send(ContentToBrowserMessage.showDefinition(
                 attributedTextData: data,
-                locationX: Float32(location.x),
-                locationY: Float32(location.y)
+                locationX: location.x,
+                locationY: location.y
             ).encode())
         }
     }

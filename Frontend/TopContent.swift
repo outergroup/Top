@@ -36,8 +36,7 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
         switch message {
         case .initializeContent(let arguments):
             let data = arguments.data ?? Data()
-            let width = arguments.contentWidth ?? 0
-            let height = arguments.contentHeight ?? 0
+            let size = arguments.contentSize ?? .zero
 
             // Configure the OuterframeHost with the received data
             outerframeHost.configure(url: arguments.url ?? "",
@@ -46,8 +45,6 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
                                      proxyPort: arguments.proxy?.port ?? 0,
                                      proxyUsername: arguments.proxy?.username,
                                      proxyPassword: arguments.proxy?.password)
-
-            let size = CGSize(width: width, height: height)
 
             let appearance_: NSAppearance = arguments.appearance ?? NSAppearance.currentDrawing()
             let windowIsActive = arguments.windowIsActive ?? true

@@ -858,7 +858,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     }
 
     func resize(width: Int, height: Int) {
-        currentSize = CGSize(width: CGFloat(width), height: CGFloat(height))
+        currentSize = CGSize(width: width, height: height)
         layoutLayers()
     }
 
@@ -3337,39 +3337,30 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
             // Already handled during start, ignore if received again
             break
 
-        case .resizeContent(let width, let height):
-            resize(width: Int(width), height: Int(height))
+        case .resizeContent(let size):
+            resize(width: Int(size.width), height: Int(size.height))
 
         case .mouseMoved:
             break
 
-        case .mouseDown(let x, let y, let modifierFlags, let clickCount):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
+        case .mouseDown(let point, let modifierFlags, let clickCount):
+            mouseDown(at: point, modifierFlags: modifierFlags, clickCount: clickCount)
 
-        case .mouseUp(let x, let y, let modifierFlags):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseUp(at: point, modifierFlags: flags)
+        case .mouseUp(let point, let modifierFlags):
+            mouseUp(at: point, modifierFlags: modifierFlags)
 
-        case .mouseDragged(let x, let y, let modifierFlags):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseDragged(to: point, modifierFlags: flags)
+        case .mouseDragged(let point, let modifierFlags):
+            mouseDragged(to: point, modifierFlags: modifierFlags)
 
         case .rightMouseDown, .rightMouseUp:
             break
 
-        case .scrollWheelEvent(let x, let y, let deltaX, let deltaY, let modifierFlags, let phase, let momentumPhase, let hasPreciseScrollingDeltas):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let delta = CGPoint(x: CGFloat(deltaX), y: CGFloat(deltaY))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+        case .scrollWheelEvent(let point, let delta, let modifierFlags, let phase, let momentumPhase, let hasPreciseScrollingDeltas):
             scrollWheel(delta: delta,
                         at: point,
-                        modifierFlags: flags,
-                        phase: NSEvent.Phase(rawValue: UInt(phase)),
-                        momentumPhase: NSEvent.Phase(rawValue: UInt(momentumPhase)),
+                        modifierFlags: modifierFlags,
+                        phase: phase,
+                        momentumPhase: momentumPhase,
                         hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
 
         case .keyDown, .keyUp:

@@ -714,7 +714,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     func resize(width: Int, height: Int) {
-        currentSize = CGSize(width: CGFloat(width), height: CGFloat(height))
+        currentSize = CGSize(width: width, height: height)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layoutLayers()
@@ -1975,26 +1975,26 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             requestSymbolImage(symbolName: stop.symbolName,
                                tint: label,
                                pointSize: 16,
-                               weight: "semibold",
+                               weight: .semibold,
                                destinationLayer: stop.iconLayer)
 
             let inspect = layers.inspectButton
             requestSymbolImage(symbolName: inspect.symbolName,
                                tint: label,
                                pointSize: 16,
-                               weight: "semibold",
+                               weight: .semibold,
                                destinationLayer: inspect.iconLayer)
 
             let search = layers.searchField
             requestSymbolImage(symbolName: search.symbolName,
                                tint: secondaryLabel,
                                pointSize: 14,
-                               weight: "semibold",
+                               weight: .semibold,
                                destinationLayer: search.iconLayer)
             requestSymbolImage(symbolName: search.clearSymbolName,
                                tint: secondaryLabel,
                                pointSize: 14,
-                               weight: "semibold",
+                               weight: .semibold,
                                destinationLayer: search.clearButtonIconLayer)
         }
     }
@@ -2028,17 +2028,21 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     private func requestSymbolImage(symbolName: String,
                                     tint: NSColor,
                                     pointSize: CGFloat,
-                                    weight: String,
+                                    weight: NSFont.Weight,
                                     destinationLayer: CALayer) {
         appConnection.getImage(systemSymbolName: symbolName,
                                       pointSize: pointSize,
                                       weight: weight,
-                                      scale: 1.0,
-                                      tintColor: tint) { [weak self, weak destinationLayer] data, width, height in
+                                      scale: 1.0) { [weak self, weak destinationLayer] data, width, height, bytesPerRow in
             Task { @MainActor [weak self, weak destinationLayer] in
                 guard let self, let layer = destinationLayer else { return }
                 guard let data = data,
-                      let image = makeCGImageFromPNGData(data) else {
+                      let image = makeCGImageFromAlphaMaskData(data,
+                                                               width: width,
+                                                               height: height,
+                                                               bytesPerRow: bytesPerRow,
+                                                               tintColor: tint,
+                                                               appearance: self.model.effectiveAppearance) else {
                     layer.contents = nil
                     layer.bounds = .zero
                     layer.isHidden = true
@@ -2444,10 +2448,10 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             let rootHeight = layers.rootLayer.bounds.height
             let topLeftY = rootHeight - rootPosition.y - cursorFrame.height
             let cursor = OuterframeContentTextCursorSnapshot(fieldID: Self.searchFieldID,
-                                                             rectX: Float32(rootPosition.x),
-                                                             rectY: Float32(topLeftY),
-                                                             rectWidth: Float32(cursorFrame.width),
-                                                             rectHeight: Float32(cursorFrame.height),
+                                                             rect: CGRect(x: rootPosition.x,
+                                                                          y: topLeftY,
+                                                                          width: cursorFrame.width,
+                                                                          height: cursorFrame.height),
                                                              visible: true)
             appConnection.sendTextCursorUpdate(cursors: [cursor])
         } else {
@@ -3269,9 +3273,62 @@ private func readFloatLE(from data: Data, offset: Int) -> Float? {
     return Float(bitPattern: bits)
 }
 
-private func makeCGImageFromPNGData(_ data: Data) -> CGImage? {
-    guard let provider = CGDataProvider(data: data as CFData) else { return nil }
-    return CGImage(pngDataProviderSource: provider,
+private func makeCGImageFromAlphaMaskData(_ data: Data,
+                                          width: UInt32,
+                                          height: UInt32,
+                                          bytesPerRow: UInt32,
+                                          tintColor: NSColor,
+                                          appearance: NSAppearance) -> CGImage? {
+    let pixelWidth = Int(width)
+    let pixelHeight = Int(height)
+    let maskBytesPerRow = Int(bytesPerRow)
+    guard pixelWidth > 0, pixelHeight > 0, maskBytesPerRow >= pixelWidth else { return nil }
+    guard data.count >= maskBytesPerRow * pixelHeight else { return nil }
+
+    var resolvedColor: NSColor?
+    appearance.performAsCurrentDrawingAppearance {
+        resolvedColor = tintColor.usingColorSpace(.sRGB)
+    }
+    guard let color = resolvedColor else { return nil }
+
+    var red: CGFloat = 0
+    var green: CGFloat = 0
+    var blue: CGFloat = 0
+    var alpha: CGFloat = 1
+    color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+
+    var rgbaData = Data(count: pixelWidth * pixelHeight * 4)
+    data.withUnsafeBytes { maskBytes in
+        rgbaData.withUnsafeMutableBytes { rgbaBytes in
+            guard let maskBaseAddress = maskBytes.baseAddress,
+                  let rgbaBaseAddress = rgbaBytes.baseAddress else {
+                return
+            }
+            let mask = maskBaseAddress.assumingMemoryBound(to: UInt8.self)
+            let rgba = rgbaBaseAddress.assumingMemoryBound(to: UInt8.self)
+            for y in 0..<pixelHeight {
+                for x in 0..<pixelWidth {
+                    let coverage = CGFloat(mask[y * maskBytesPerRow + x]) / 255
+                    let outputAlpha = coverage * alpha
+                    let offset = (y * pixelWidth + x) * 4
+                    rgba[offset] = UInt8((red * outputAlpha * 255).rounded())
+                    rgba[offset + 1] = UInt8((green * outputAlpha * 255).rounded())
+                    rgba[offset + 2] = UInt8((blue * outputAlpha * 255).rounded())
+                    rgba[offset + 3] = UInt8((outputAlpha * 255).rounded())
+                }
+            }
+        }
+    }
+
+    guard let provider = CGDataProvider(data: rgbaData as CFData) else { return nil }
+    return CGImage(width: pixelWidth,
+                   height: pixelHeight,
+                   bitsPerComponent: 8,
+                   bitsPerPixel: 32,
+                   bytesPerRow: pixelWidth * 4,
+                   space: CGColorSpaceCreateDeviceRGB(),
+                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                   provider: provider,
                    decode: nil,
                    shouldInterpolate: true,
                    intent: .defaultIntent)
@@ -3367,54 +3424,40 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
             // Already handled during start, ignore if received again
             break
 
-        case .resizeContent(let width, let height):
-            resize(width: Int(width), height: Int(height))
+        case .resizeContent(let size):
+            resize(width: Int(size.width), height: Int(size.height))
 
-        case .mouseMoved(let x, let y, let modifierFlags):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseMoved(to: point, modifierFlags: flags)
+        case .mouseMoved(let point, let modifierFlags):
+            mouseMoved(to: point, modifierFlags: modifierFlags)
 
-        case .mouseDown(let x, let y, let modifierFlags, let clickCount):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
+        case .mouseDown(let point, let modifierFlags, let clickCount):
+            mouseDown(at: point, modifierFlags: modifierFlags, clickCount: clickCount)
 
-        case .mouseUp(let x, let y, let modifierFlags):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseUp(at: point, modifierFlags: flags)
+        case .mouseUp(let point, let modifierFlags):
+            mouseUp(at: point, modifierFlags: modifierFlags)
 
-        case .mouseDragged(let x, let y, let modifierFlags):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            mouseDragged(to: point, modifierFlags: flags)
+        case .mouseDragged(let point, let modifierFlags):
+            mouseDragged(to: point, modifierFlags: modifierFlags)
 
-        case .rightMouseDown(let x, let y, let modifierFlags, let clickCount):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
-            rightMouseDown(at: point, modifierFlags: flags, clickCount: Int(clickCount))
+        case .rightMouseDown(let point, let modifierFlags, let clickCount):
+            rightMouseDown(at: point, modifierFlags: modifierFlags, clickCount: clickCount)
 
         case .rightMouseUp:
             break
 
-        case .scrollWheelEvent(let x, let y, let deltaX, let deltaY, let modifierFlags, let phase, let momentumPhase, let hasPreciseScrollingDeltas):
-            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            let delta = CGPoint(x: CGFloat(deltaX), y: CGFloat(deltaY))
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+        case .scrollWheelEvent(let point, let delta, let modifierFlags, let phase, let momentumPhase, let hasPreciseScrollingDeltas):
             scrollWheel(delta: delta,
                         at: point,
-                        modifierFlags: flags,
-                        phase: NSEvent.Phase(rawValue: UInt(phase)),
-                        momentumPhase: NSEvent.Phase(rawValue: UInt(momentumPhase)),
+                        modifierFlags: modifierFlags,
+                        phase: phase,
+                        momentumPhase: momentumPhase,
                         hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
 
         case .keyDown(let keyCode, let characters, let charactersIgnoringModifiers, let modifierFlags, let isARepeat):
-            let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
             keyDown(keyCode: keyCode,
                     characters: characters,
                     charactersIgnoringModifiers: charactersIgnoringModifiers,
-                    modifierFlags: flags,
+                    modifierFlags: modifierFlags,
                     isARepeat: isARepeat)
 
         case .keyUp:
