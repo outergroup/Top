@@ -28,7 +28,7 @@ typealias OuterframeHostDisconnectHandler = @MainActor (OuterframeHost) -> Void
 @MainActor
 protocol OuterframeHostDelegate: AnyObject {
     /// Called when a message is received from the browser.
-    /// Note: displayLinkFired, displayLinkCallbackRegistered, and imageWithSystemSymbolName
+    /// Note: displayLinkFired and displayLinkCallbackRegistered
     /// are handled internally by OuterframeHost and will not be forwarded to this delegate.
     func outerframeHost(_ host: OuterframeHost, didReceiveMessage message: BrowserToContentMessage)
 
@@ -52,14 +52,16 @@ final class OuterframeHost: SocketToBrowserDelegate {
     /// The URL where the plugin bundle was downloaded from
     private var _bundleUrl: String?
 
+    private var _currentHistoryEntryID: UUID?
+    private var _historyLength: UInt32 = 0
+    private var _canGoBack = false
+    private var _canGoForward = false
+
     // Display link callback management
     private var displayLinkCallbacks: [UUID: @MainActor @Sendable (CFTimeInterval) -> Void] = [:]
     private var pendingDisplayLinkCallbacks: [UUID: @MainActor @Sendable (CFTimeInterval) -> Void] = [:]
     private var callbackIDToBrowserID: [UUID: UUID] = [:]
     private var browserIDToCallbackID: [UUID: UUID] = [:]
-
-    // SF Symbol request tracking
-    private var imageRequests: [UUID: (Data?, UInt32, UInt32, UInt32) -> Void] = [:]
 
     /// Creates an OuterframeHost and starts the socket.
     /// Call `configure()` after receiving the initializeContent message to set context and appearance.
@@ -126,11 +128,20 @@ final class OuterframeHost: SocketToBrowserDelegate {
         case .displayLinkCallbackRegistered(let callbackID, let browserCallbackID):
             handleDisplayLinkCallbackRegistered(callbackID: callbackID, browserCallbackID: browserCallbackID)
             return
+        case .initializeContent(let arguments):
+            _currentHistoryEntryID = arguments.historyEntryID
 
-        case .imageWithSystemSymbolName(let requestID, let alphaMaskData, let width, let height, let bytesPerRow, _, _):
-            handleImageWithSystemSymbolNameResponse(requestID: requestID, alphaMaskData: alphaMaskData, width: width, height: height, bytesPerRow: bytesPerRow)
-            return
+        case .historyEntryAccepted(let entryID, let url),
+             .historyTraversal(let entryID, let url):
+            _currentHistoryEntryID = entryID
+            _url = url
 
+        case .historyContextUpdate(let currentEntryID, let url, let length, let canGoBack, let canGoForward):
+            _currentHistoryEntryID = currentEntryID
+            _url = url
+            _historyLength = length
+            _canGoBack = canGoBack
+            _canGoForward = canGoForward
 
         default:
             break
@@ -226,36 +237,9 @@ final class OuterframeHost: SocketToBrowserDelegate {
         }
     }
 
-    // MARK: - systemSymbolName image Requests
-
-    func getImage(systemSymbolName: String,
-                  pointSize: CGFloat,
-                  weight: NSFont.Weight,
-                  scale: CGFloat,
-                  completion: @escaping (Data?, UInt32, UInt32, UInt32) -> Void) {
-        let requestID = UUID()
-        imageRequests[requestID] = completion
-
-        Task {
-            try? await socket.send(ContentToBrowserMessage.getImageWithSystemSymbolName(
-                requestID: requestID,
-                symbolName: systemSymbolName,
-                pointSize: pointSize,
-                weight: Double(weight.rawValue),
-                scale: scale
-            ).encode())
-        }
-    }
-
-    private func handleImageWithSystemSymbolNameResponse(requestID: UUID, alphaMaskData: Data?, width: UInt32, height: UInt32, bytesPerRow: UInt32) {
-        if let completion = imageRequests.removeValue(forKey: requestID) {
-            completion(alphaMaskData, width, height, bytesPerRow)
-        }
-    }
-
     // MARK: - Text Cursor
 
-    func sendTextCursorUpdate(cursors: [OuterframeContentTextCursorSnapshot]) {
+    func sendTextCursorUpdate(cursors: [OuterContentTextCursorSnapshot]) {
         Task {
             try? await socket.send(ContentToBrowserMessage.textCursorUpdate(cursors: cursors).encode())
         }
@@ -271,6 +255,44 @@ final class OuterframeHost: SocketToBrowserDelegate {
                 preferredSize: preferredSize
             ).encode())
         }
+    }
+
+    @discardableResult
+    func pushHistoryEntry(url: URL?) -> UUID {
+        let entryID = UUID()
+        Task {
+            try? await socket.send(ContentToBrowserMessage.historyPushEntry(
+                entryID: entryID,
+                url: url?.absoluteString
+            ).encode())
+        }
+        return entryID
+    }
+
+    @discardableResult
+    func replaceHistoryEntry(url: URL?) -> UUID {
+        let entryID = UUID()
+        Task {
+            try? await socket.send(ContentToBrowserMessage.historyReplaceEntry(
+                entryID: entryID,
+                url: url?.absoluteString
+            ).encode())
+        }
+        return entryID
+    }
+
+    func goInHistory(by delta: Int32) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.historyGo(delta: delta).encode())
+        }
+    }
+
+    func goBackInHistory() {
+        goInHistory(by: -1)
+    }
+
+    func goForwardInHistory() {
+        goInHistory(by: 1)
     }
 
     func showContextMenu(for attributedText: NSAttributedString, at location: CGPoint) {
@@ -328,7 +350,7 @@ final class OuterframeHost: SocketToBrowserDelegate {
     // MARK: - Pasteboard
 
     /// Sends a copy selected pasteboard response to the browser.
-    func sendCopySelectedPasteboardResponse(requestID: UUID, items: [OuterframeContentPasteboardItem]) {
+    func sendCopySelectedPasteboardResponse(requestID: UUID, items: [OuterContentPasteboardItem]) {
         Task {
             try? await socket.send(ContentToBrowserMessage.copySelectedPasteboardResponse(
                 requestID: requestID,
@@ -366,6 +388,22 @@ final class OuterframeHost: SocketToBrowserDelegate {
     func pluginBundleURL() -> URL? {
         guard let urlString = _bundleUrl else { return nil }
         return URL(string: urlString)
+    }
+
+    func currentHistoryEntryID() -> UUID? {
+        _currentHistoryEntryID
+    }
+
+    func historyLength() -> UInt32 {
+        _historyLength
+    }
+
+    func canGoBackInHistory() -> Bool {
+        _canGoBack
+    }
+
+    func canGoForwardInHistory() -> Bool {
+        _canGoForward
     }
 
     // MARK: - Network Proxy (stored separately, set by host before passing to plugin)

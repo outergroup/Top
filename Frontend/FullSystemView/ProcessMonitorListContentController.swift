@@ -2030,36 +2030,27 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                                     pointSize: CGFloat,
                                     weight: NSFont.Weight,
                                     destinationLayer: CALayer) {
-        appConnection.getImage(systemSymbolName: symbolName,
-                                      pointSize: pointSize,
-                                      weight: weight,
-                                      scale: 1.0) { [weak self, weak destinationLayer] data, width, height, bytesPerRow in
-            Task { @MainActor [weak self, weak destinationLayer] in
-                guard let self, let layer = destinationLayer else { return }
-                guard let data = data,
-                      let image = makeCGImageFromAlphaMaskData(data,
-                                                               width: width,
-                                                               height: height,
-                                                               bytesPerRow: bytesPerRow,
-                                                               tintColor: tint,
-                                                               appearance: self.model.effectiveAppearance) else {
-                    layer.contents = nil
-                    layer.bounds = .zero
-                    layer.isHidden = true
-                    self.layoutCommandBar()
-                    return
-                }
-
-                let contentsScale = max(layer.contentsScale, 2)
-                layer.contentsScale = contentsScale
-                let resolvedWidth = width > 0 ? CGFloat(width) : CGFloat(image.width) / contentsScale
-                let resolvedHeight = height > 0 ? CGFloat(height) : CGFloat(image.height) / contentsScale
-                layer.bounds = CGRect(origin: .zero, size: CGSize(width: resolvedWidth, height: resolvedHeight))
-                layer.contents = image
-                layer.isHidden = false
-                self.layoutCommandBar()
-            }
+        let contentsScale = max(destinationLayer.contentsScale, 2)
+        guard let image = makeSystemSymbolImage(systemSymbolName: symbolName,
+                                                pointSize: pointSize,
+                                                weight: weight,
+                                                scale: contentsScale,
+                                                tintColor: tint,
+                                                appearance: model.effectiveAppearance) else {
+            destinationLayer.contents = nil
+            destinationLayer.bounds = .zero
+            destinationLayer.isHidden = true
+            layoutCommandBar()
+            return
         }
+
+        destinationLayer.contentsScale = contentsScale
+        let resolvedWidth = CGFloat(image.width) / contentsScale
+        let resolvedHeight = CGFloat(image.height) / contentsScale
+        destinationLayer.bounds = CGRect(origin: .zero, size: CGSize(width: resolvedWidth, height: resolvedHeight))
+        destinationLayer.contents = image
+        destinationLayer.isHidden = false
+        layoutCommandBar()
     }
 
     private func layoutCommandBar() {
@@ -3271,67 +3262,6 @@ private func readUInt64LE(from data: Data, offset: Int) -> UInt64? {
 private func readFloatLE(from data: Data, offset: Int) -> Float? {
     guard let bits: UInt32 = readUInt32LE(from: data, offset: offset) else { return nil }
     return Float(bitPattern: bits)
-}
-
-private func makeCGImageFromAlphaMaskData(_ data: Data,
-                                          width: UInt32,
-                                          height: UInt32,
-                                          bytesPerRow: UInt32,
-                                          tintColor: NSColor,
-                                          appearance: NSAppearance) -> CGImage? {
-    let pixelWidth = Int(width)
-    let pixelHeight = Int(height)
-    let maskBytesPerRow = Int(bytesPerRow)
-    guard pixelWidth > 0, pixelHeight > 0, maskBytesPerRow >= pixelWidth else { return nil }
-    guard data.count >= maskBytesPerRow * pixelHeight else { return nil }
-
-    var resolvedColor: NSColor?
-    appearance.performAsCurrentDrawingAppearance {
-        resolvedColor = tintColor.usingColorSpace(.sRGB)
-    }
-    guard let color = resolvedColor else { return nil }
-
-    var red: CGFloat = 0
-    var green: CGFloat = 0
-    var blue: CGFloat = 0
-    var alpha: CGFloat = 1
-    color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-
-    var rgbaData = Data(count: pixelWidth * pixelHeight * 4)
-    data.withUnsafeBytes { maskBytes in
-        rgbaData.withUnsafeMutableBytes { rgbaBytes in
-            guard let maskBaseAddress = maskBytes.baseAddress,
-                  let rgbaBaseAddress = rgbaBytes.baseAddress else {
-                return
-            }
-            let mask = maskBaseAddress.assumingMemoryBound(to: UInt8.self)
-            let rgba = rgbaBaseAddress.assumingMemoryBound(to: UInt8.self)
-            for y in 0..<pixelHeight {
-                for x in 0..<pixelWidth {
-                    let coverage = CGFloat(mask[y * maskBytesPerRow + x]) / 255
-                    let outputAlpha = coverage * alpha
-                    let offset = (y * pixelWidth + x) * 4
-                    rgba[offset] = UInt8((red * outputAlpha * 255).rounded())
-                    rgba[offset + 1] = UInt8((green * outputAlpha * 255).rounded())
-                    rgba[offset + 2] = UInt8((blue * outputAlpha * 255).rounded())
-                    rgba[offset + 3] = UInt8((outputAlpha * 255).rounded())
-                }
-            }
-        }
-    }
-
-    guard let provider = CGDataProvider(data: rgbaData as CFData) else { return nil }
-    return CGImage(width: pixelWidth,
-                   height: pixelHeight,
-                   bitsPerComponent: 8,
-                   bitsPerPixel: 32,
-                   bytesPerRow: pixelWidth * 4,
-                   space: CGColorSpaceCreateDeviceRGB(),
-                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                   provider: provider,
-                   decode: nil,
-                   shouldInterpolate: true,
-                   intent: .defaultIntent)
 }
 
 private func readDoubleLE(from data: Data, offset: Int) -> Double? {

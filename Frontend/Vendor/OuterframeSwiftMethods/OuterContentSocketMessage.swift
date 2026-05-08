@@ -21,6 +21,7 @@ struct InitializeContentArguments {
     var url: String?
     var bundleUrl: String?
     var windowIsActive: Bool?
+    var historyEntryID: UUID?
 
     init(data: Data? = nil,
          contentSize: CGSize? = nil,
@@ -28,7 +29,8 @@ struct InitializeContentArguments {
          proxy: InitializeContentProxy? = nil,
          url: String? = nil,
          bundleUrl: String? = nil,
-         windowIsActive: Bool? = nil) {
+         windowIsActive: Bool? = nil,
+         historyEntryID: UUID? = nil) {
         self.data = data
         self.contentSize = contentSize
         self.appearance = appearance
@@ -36,6 +38,7 @@ struct InitializeContentArguments {
         self.url = url
         self.bundleUrl = bundleUrl
         self.windowIsActive = windowIsActive
+        self.historyEntryID = historyEntryID
     }
 }
 
@@ -48,6 +51,7 @@ fileprivate enum InitArgKind: UInt8 {
     case url = 6
     case bundleUrl = 7
     case windowIsActive = 8
+    case historyEntryID = 9
 }
 
 /// Messages from Browser to Content on the content socket
@@ -81,13 +85,6 @@ enum BrowserToContentMessage {
     case magnification(surfaceID: UInt32, magnification: CGFloat, location: CGPoint, scrollOffset: CGPoint)
     case magnificationEnded(surfaceID: UInt32, magnification: CGFloat, location: CGPoint, scrollOffset: CGPoint)
     case quickLook(point: CGPoint)
-    case imageWithSystemSymbolName(requestID: UUID,
-                                   alphaMaskData: Data?,
-                                   width: UInt32,
-                                   height: UInt32,
-                                   bytesPerRow: UInt32,
-                                   success: Bool,
-                                   errorMessage: String?)
     case textInput(text: String,
                    hasReplacementRange: Bool,
                    replacementLocation: UInt64,
@@ -108,6 +105,10 @@ enum BrowserToContentMessage {
     case copySelectedPasteboardRequest(requestID: UUID)
     case pasteboardContentDelivered(items: [OuterframeContentPasteboardItem])
     case accessibilitySnapshotRequest(requestID: UUID)
+    case historyEntryAccepted(entryID: UUID, url: String)
+    case historyEntryRejected(entryID: UUID, errorMessage: String)
+    case historyTraversal(entryID: UUID, url: String)
+    case historyContextUpdate(currentEntryID: UUID, url: String, length: UInt32, canGoBack: Bool, canGoForward: Bool)
     case shutdown
 
     func encode() throws -> Data {
@@ -149,10 +150,10 @@ enum BrowserToContentMessage {
                     var authPayload = OffsetPayloadBuilder(referenceBaseOffset: 0)
                     authPayload.append(uint8: InitArgKind.proxyAuth.rawValue)
                     var flags: UInt8 = 0
-                    if let username = proxy.username {
+                    if proxy.username != nil {
                         flags |= 1 << 0
                     }
-                    if let password = proxy.password {
+                    if proxy.password != nil {
                         flags |= 1 << 1
                     }
                     authPayload.append(uint8: flags)
@@ -180,6 +181,13 @@ enum BrowserToContentMessage {
                 var argPayload = Data(capacity: 2)
                 argPayload.append(uint8: InitArgKind.windowIsActive.rawValue)
                 argPayload.append(uint8: windowIsActive ? 1 << 0 : 0)
+                encodedArguments.append(argPayload)
+            }
+
+            if let historyEntryID = arguments.historyEntryID {
+                var argPayload = Data(capacity: 1 + 16)
+                argPayload.append(uint8: InitArgKind.historyEntryID.rawValue)
+                argPayload.append(uuid: historyEntryID)
                 encodedArguments.append(argPayload)
             }
 
@@ -293,21 +301,6 @@ enum BrowserToContentMessage {
             payload.append(float64: point.y)
             return makeBrowserToContentFrame(type: .quickLook, payload: payload)
 
-        case .imageWithSystemSymbolName(let requestID, let alphaMaskData, let width, let height, let bytesPerRow, let success, let errorMessage):
-            var payload = OffsetPayloadBuilder()
-            payload.append(uuid: requestID)
-            payload.append(uint32: width)
-            payload.append(uint32: height)
-            payload.append(uint32: bytesPerRow)
-            var flags: UInt8 = 0
-            if success { flags |= 1 << 0 }
-            if alphaMaskData != nil { flags |= 1 << 1 }
-            if errorMessage != nil { flags |= 1 << 2 }
-            payload.append(uint8: flags)
-            try payload.append(dataReference: alphaMaskData ?? Data())
-            try payload.append(stringReference: errorMessage ?? "")
-            return makeBrowserToContentFrame(type: .imageWithSystemSymbolName, payload: try payload.finalize())
-
         case .textInput(let text, let hasReplacementRange, let replacementLocation, let replacementLength):
             var payload = OffsetPayloadBuilder()
             try payload.append(stringReference: text)
@@ -382,6 +375,35 @@ enum BrowserToContentMessage {
             var payload = Data(capacity: 16)
             payload.append(uuid: requestID)
             return makeBrowserToContentFrame(type: .accessibilitySnapshotRequest, payload: payload)
+
+        case .historyEntryAccepted(let entryID, let url):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uuid: entryID)
+            try payload.append(stringReference: url)
+            return makeBrowserToContentFrame(type: .historyEntryAccepted, payload: try payload.finalize())
+
+        case .historyEntryRejected(let entryID, let errorMessage):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uuid: entryID)
+            try payload.append(stringReference: errorMessage)
+            return makeBrowserToContentFrame(type: .historyEntryRejected, payload: try payload.finalize())
+
+        case .historyTraversal(let entryID, let url):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uuid: entryID)
+            try payload.append(stringReference: url)
+            return makeBrowserToContentFrame(type: .historyTraversal, payload: try payload.finalize())
+
+        case .historyContextUpdate(let currentEntryID, let url, let length, let canGoBack, let canGoForward):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uuid: currentEntryID)
+            try payload.append(stringReference: url)
+            payload.append(uint32: length)
+            var flags: UInt8 = 0
+            if canGoBack { flags |= 1 << 0 }
+            if canGoForward { flags |= 1 << 1 }
+            payload.append(uint8: flags)
+            return makeBrowserToContentFrame(type: .historyContextUpdate, payload: try payload.finalize())
 
         case .shutdown:
             return makeBrowserToContentFrame(type: .shutdown, payload: Data())
@@ -493,6 +515,12 @@ enum BrowserToContentMessage {
                         throw OuterframeContentSocketMessageError.truncatedPayload
                     }
                     arguments.windowIsActive = windowIsActiveRaw & (1 << 0) != 0
+
+                case .historyEntryID:
+                    guard let historyEntryID = argCursor.readUUID() else {
+                        throw OuterframeContentSocketMessageError.truncatedPayload
+                    }
+                    arguments.historyEntryID = historyEntryID
                 }
             }
 
@@ -623,24 +651,6 @@ enum BrowserToContentMessage {
             }
             return .quickLook(point: CGPoint(x: x, y: y))
 
-        case .imageWithSystemSymbolName:
-            guard let requestID = cursor.readUUID(),
-                  let width = cursor.readUInt32(),
-                  let height = cursor.readUInt32(),
-                  let bytesPerRow = cursor.readUInt32(),
-                  let flags = cursor.readUInt8(),
-                  let alphaMaskDataReference = cursor.readDataReference(),
-                  let errorMessageReference = cursor.readStringReference() else {
-                throw OuterframeContentSocketMessageError.truncatedPayload
-            }
-
-            let alphaMaskData = flags & (1 << 1) != 0 ? alphaMaskDataReference : nil
-            let errorMessage = flags & (1 << 2) != 0 ? errorMessageReference : nil
-
-            return .imageWithSystemSymbolName(requestID: requestID, alphaMaskData: alphaMaskData,
-                                     width: width, height: height, bytesPerRow: bytesPerRow,
-                                     success: flags & (1 << 0) != 0, errorMessage: errorMessage)
-
         case .textInput:
             guard let text = cursor.readStringReference(),
                   let flags = cursor.readUInt8(),
@@ -739,6 +749,40 @@ enum BrowserToContentMessage {
             }
             return .accessibilitySnapshotRequest(requestID: requestID)
 
+        case .historyEntryAccepted:
+            guard let entryID = cursor.readUUID(),
+                  let url = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            return .historyEntryAccepted(entryID: entryID, url: url)
+
+        case .historyEntryRejected:
+            guard let entryID = cursor.readUUID(),
+                  let errorMessage = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            return .historyEntryRejected(entryID: entryID, errorMessage: errorMessage)
+
+        case .historyTraversal:
+            guard let entryID = cursor.readUUID(),
+                  let url = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            return .historyTraversal(entryID: entryID, url: url)
+
+        case .historyContextUpdate:
+            guard let currentEntryID = cursor.readUUID(),
+                  let url = cursor.readStringReference(),
+                  let length = cursor.readUInt32(),
+                  let flags = cursor.readUInt8() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            return .historyContextUpdate(currentEntryID: currentEntryID,
+                                         url: url,
+                                         length: length,
+                                         canGoBack: flags & (1 << 0) != 0,
+                                         canGoForward: flags & (1 << 1) != 0)
+
         case .shutdown:
             return .shutdown
         }
@@ -753,11 +797,6 @@ enum ContentToBrowserMessage {
     case inputModeUpdate(inputMode: UInt8)
     case showContextMenu(attributedTextData: Data, locationX: CGFloat, locationY: CGFloat)
     case showDefinition(attributedTextData: Data, locationX: CGFloat, locationY: CGFloat)
-    case getImageWithSystemSymbolName(requestID: UUID,
-                                      symbolName: String,
-                                      pointSize: CGFloat,
-                                      weight: Float64,
-                                      scale: CGFloat)
     case textCursorUpdate(cursors: [OuterframeContentTextCursorSnapshot])
     case copySelectedPasteboardResponse(requestID: UUID, items: [OuterframeContentPasteboardItem])
     case openNewWindow(url: String, displayString: String?, preferredSize: CGSize?)
@@ -765,6 +804,9 @@ enum ContentToBrowserMessage {
     case accessibilitySnapshotResponse(requestID: UUID, snapshotData: Data?)
     case accessibilityTreeChanged(notificationMask: UInt8)
     case hapticFeedback(style: UInt8)
+    case historyPushEntry(entryID: UUID, url: String?)
+    case historyReplaceEntry(entryID: UUID, url: String?)
+    case historyGo(delta: Int32)
 
     func encode() throws -> Data {
         switch self {
@@ -801,15 +843,6 @@ enum ContentToBrowserMessage {
             payload.append(float64: locationY)
             try payload.append(dataReference: attributedTextData)
             return makeContentToBrowserFrame(type: .showDefinition, payload: try payload.finalize())
-
-        case .getImageWithSystemSymbolName(let requestID, let symbolName, let pointSize, let weight, let scale):
-            var payload = OffsetPayloadBuilder()
-            payload.append(uuid: requestID)
-            try payload.append(stringReference: symbolName)
-            payload.append(float64: pointSize)
-            payload.append(float64: weight)
-            payload.append(float64: scale)
-            return makeContentToBrowserFrame(type: .getImageWithSystemSymbolName, payload: try payload.finalize())
 
         case .textCursorUpdate(let cursors):
             var payload = Data()
@@ -877,6 +910,25 @@ enum ContentToBrowserMessage {
             var payload = Data(capacity: 1)
             payload.append(uint8: style)
             return makeContentToBrowserFrame(type: .hapticFeedback, payload: payload)
+
+        case .historyPushEntry(let entryID, let url):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uuid: entryID)
+            payload.append(uint8: url != nil ? 1 << 0 : 0)
+            try payload.append(stringReference: url ?? "")
+            return makeContentToBrowserFrame(type: .historyPushEntry, payload: try payload.finalize())
+
+        case .historyReplaceEntry(let entryID, let url):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uuid: entryID)
+            payload.append(uint8: url != nil ? 1 << 0 : 0)
+            try payload.append(stringReference: url ?? "")
+            return makeContentToBrowserFrame(type: .historyReplaceEntry, payload: try payload.finalize())
+
+        case .historyGo(let delta):
+            var payload = Data(capacity: 4)
+            payload.append(int32: delta)
+            return makeContentToBrowserFrame(type: .historyGo, payload: payload)
         }
     }
 
@@ -931,17 +983,6 @@ enum ContentToBrowserMessage {
             }
             return .showDefinition(attributedTextData: attributedTextData,
                                    locationX: locationX, locationY: locationY)
-
-        case .getImageWithSystemSymbolName:
-            guard let requestID = cursor.readUUID(),
-                  let symbolName = cursor.readStringReference(),
-                  let pointSize = cursor.readFloat64(),
-                  let weight = cursor.readFloat64(),
-                  let scale = cursor.readFloat64() else {
-                throw OuterframeContentSocketMessageError.truncatedPayload
-            }
-            return .getImageWithSystemSymbolName(requestID: requestID, symbolName: symbolName,
-                                    pointSize: pointSize, weight: weight, scale: scale)
 
         case .textCursorUpdate:
             guard let cursorCount = cursor.readUInt32() else {
@@ -1021,6 +1062,30 @@ enum ContentToBrowserMessage {
             }
             return .hapticFeedback(style: style)
 
+        case .historyPushEntry:
+            guard let entryID = cursor.readUUID(),
+                  let flags = cursor.readUInt8(),
+                  let urlReference = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            let url = flags & (1 << 0) != 0 ? urlReference : nil
+            return .historyPushEntry(entryID: entryID, url: url)
+
+        case .historyReplaceEntry:
+            guard let entryID = cursor.readUUID(),
+                  let flags = cursor.readUInt8(),
+                  let urlReference = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            let url = flags & (1 << 0) != 0 ? urlReference : nil
+            return .historyReplaceEntry(entryID: entryID, url: url)
+
+        case .historyGo:
+            guard let delta = cursor.readInt32() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            return .historyGo(delta: delta)
+
         case .openNewWindow:
             guard let url = cursor.readStringReference(),
                   let flags = cursor.readUInt8(),
@@ -1090,10 +1155,15 @@ private enum BrowserToContentMessageKind: UInt16 {
     case textInputFocus = 1023
     case textCommand = 1024
     case setCursorPosition = 1025
-    case imageWithSystemSymbolName = 1026
-    case copySelectedPasteboardRequest = 1027
-    case pasteboardContentDelivered = 1028
-    case accessibilitySnapshotRequest = 1029
+    case copySelectedPasteboardRequest = 1026
+    case pasteboardContentDelivered = 1027
+    case accessibilitySnapshotRequest = 1028
+    case historyEntryAccepted = 1029
+    case historyEntryRejected = 1030
+    case historyTraversal = 1031
+    case historyContextUpdate = 1032
+
+    // Assign new indices in contiguous blocks to make the switch statement more efficient
 }
 
 private enum ContentToBrowserMessageKind: UInt16 {
@@ -1104,13 +1174,17 @@ private enum ContentToBrowserMessageKind: UInt16 {
     case textCursorUpdate = 2004
     case showContextMenu = 2005
     case showDefinition = 2006
-    case getImageWithSystemSymbolName = 2007
-    case hapticFeedback = 2008
-    case copySelectedPasteboardResponse = 2009
-    case editingCapabilitiesUpdate = 2010
-    case accessibilitySnapshotResponse = 2011
-    case accessibilityTreeChanged = 2012
-    case openNewWindow = 2013
+    case hapticFeedback = 2007
+    case copySelectedPasteboardResponse = 2008
+    case editingCapabilitiesUpdate = 2009
+    case accessibilitySnapshotResponse = 2010
+    case accessibilityTreeChanged = 2011
+    case openNewWindow = 2012
+    case historyPushEntry = 2013
+    case historyReplaceEntry = 2014
+    case historyGo = 2015
+
+    // Assign new indices in contiguous blocks to make the switch statement more efficient
 }
 
 // MARK: - Frame Helpers
@@ -1274,6 +1348,11 @@ private struct DataCursor {
         return value
     }
 
+    mutating func readInt32() -> Int32? {
+        guard let value = readUInt32() else { return nil }
+        return Int32(bitPattern: value)
+    }
+
     mutating func readUInt16() -> UInt16? {
         guard offset + 2 <= data.count else { return nil }
         let value = data[offset..<(offset + 2)].enumerated().reduce(UInt16(0)) {
@@ -1310,7 +1389,8 @@ private struct DataCursor {
     }
 
     mutating func readData(_ length: Int) -> Data? {
-        guard offset + length <= data.count else { return nil }
+        guard length >= 0,
+              length <= data.count - offset else { return nil }
         let range = offset..<(offset + length)
         offset += length
         return data.subdata(in: range)
@@ -1383,10 +1463,15 @@ fileprivate extension Data {
         var uuidValue = uuid.uuid
         Swift.withUnsafeBytes(of: &uuidValue) { append(contentsOf: $0) }
     }
+
     mutating func replaceUInt32(at offset: Int, with value: UInt32) {
         var le = value.littleEndian
         Swift.withUnsafeBytes(of: &le) {
             replaceSubrange(offset..<(offset + 4), with: $0)
         }
     }
+
 }
+
+typealias OuterContentTextCursorSnapshot = OuterframeContentTextCursorSnapshot
+typealias OuterContentPasteboardItem = OuterframeContentPasteboardItem

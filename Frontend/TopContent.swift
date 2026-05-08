@@ -11,6 +11,62 @@ private struct ProcessMonitorConfigurationProbe: Decodable {
     let detail: Detail?
 }
 
+func makeSystemSymbolImage(systemSymbolName: String,
+                           pointSize: CGFloat,
+                           weight: NSFont.Weight,
+                           scale: CGFloat,
+                           tintColor: NSColor,
+                           appearance: NSAppearance) -> CGImage? {
+    guard let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil) else {
+        return nil
+    }
+
+    let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+        .applying(NSImage.SymbolConfiguration(hierarchicalColor: tintColor))
+    guard let configuredImage = image.withSymbolConfiguration(config) else {
+        return nil
+    }
+
+    let imageSize = configuredImage.size
+    let renderScale = max(scale, 1)
+    let pixelWidth = max(Int(ceil(imageSize.width * renderScale)), 1)
+    let pixelHeight = max(Int(ceil(imageSize.height * renderScale)), 1)
+    let rgbaBytesPerRow = pixelWidth * 4
+    var rgbaData = Data(count: rgbaBytesPerRow * pixelHeight)
+
+    return rgbaData.withUnsafeMutableBytes { bytes -> CGImage? in
+        guard let baseAddress = bytes.baseAddress else {
+            return nil
+        }
+
+        guard let context = CGContext(data: baseAddress,
+                                      width: pixelWidth,
+                                      height: pixelHeight,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: rgbaBytesPerRow,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+
+        var outputImage: CGImage?
+        appearance.performAsCurrentDrawingAppearance {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            NSColor.clear.set()
+            NSRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight).fill()
+            context.scaleBy(x: renderScale, y: renderScale)
+            configuredImage.draw(in: NSRect(origin: .zero, size: imageSize),
+                                 from: .zero,
+                                 operation: .sourceOver,
+                                 fraction: 1.0)
+            NSGraphicsContext.restoreGraphicsState()
+            outputImage = context.makeImage()
+        }
+        return outputImage
+    }
+}
+
 /// Handles the initial initializeContent message before we know which controller to create.
 /// Once initializeContent is received, creates the appropriate controller and hands off the delegate.
 @MainActor

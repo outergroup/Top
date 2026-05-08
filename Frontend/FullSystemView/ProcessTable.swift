@@ -307,43 +307,26 @@ final class ProcessTable {
 
     private func requestSortIndicatorImages() {
         let tintColor = NSColor.secondaryLabelColor
-        appConnection.getImage(
-            systemSymbolName: "chevron.up",
-            pointSize: 10,
-            weight: .semibold,
-            scale: 1.0
-        ) { [weak self] data, width, height, bytesPerRow in
-            Task { @MainActor in
-                guard let self, let data else { return }
-                guard let image = makeCGImageFromAlphaMaskData(data,
-                                                               width: width,
-                                                               height: height,
-                                                               bytesPerRow: bytesPerRow,
-                                                               tintColor: tintColor,
-                                                               appearance: self.model.effectiveAppearance) else { return }
-                self.chevronUpImage = image
-                self.updateHeaderLabels()
-            }
+        let contentsScale: CGFloat = 2
+        if let image = makeSystemSymbolImage(systemSymbolName: "chevron.up",
+                                             pointSize: 10,
+                                             weight: .semibold,
+                                             scale: contentsScale,
+                                             tintColor: tintColor,
+                                             appearance: model.effectiveAppearance) {
+            chevronUpImage = image
         }
 
-        appConnection.getImage(
-            systemSymbolName: "chevron.down",
-            pointSize: 10,
-            weight: .semibold,
-            scale: 1.0
-        ) { [weak self] data, width, height, bytesPerRow in
-            Task { @MainActor in
-                guard let self, let data else { return }
-                guard let image = makeCGImageFromAlphaMaskData(data,
-                                                               width: width,
-                                                               height: height,
-                                                               bytesPerRow: bytesPerRow,
-                                                               tintColor: tintColor,
-                                                               appearance: self.model.effectiveAppearance) else { return }
-                self.chevronDownImage = image
-                self.updateHeaderLabels()
-            }
+        if let image = makeSystemSymbolImage(systemSymbolName: "chevron.down",
+                                             pointSize: 10,
+                                             weight: .semibold,
+                                             scale: contentsScale,
+                                             tintColor: tintColor,
+                                             appearance: model.effectiveAppearance) {
+            chevronDownImage = image
         }
+
+        updateHeaderLabels()
     }
 
     func cleanup() {
@@ -2443,67 +2426,6 @@ final class ProcessTable {
         }
         return max(0, totalWidth * columns[index].weight)
     }
-}
-
-private func makeCGImageFromAlphaMaskData(_ data: Data,
-                                          width: UInt32,
-                                          height: UInt32,
-                                          bytesPerRow: UInt32,
-                                          tintColor: NSColor,
-                                          appearance: NSAppearance) -> CGImage? {
-    let pixelWidth = Int(width)
-    let pixelHeight = Int(height)
-    let maskBytesPerRow = Int(bytesPerRow)
-    guard pixelWidth > 0, pixelHeight > 0, maskBytesPerRow >= pixelWidth else { return nil }
-    guard data.count >= maskBytesPerRow * pixelHeight else { return nil }
-
-    var resolvedColor: NSColor?
-    appearance.performAsCurrentDrawingAppearance {
-        resolvedColor = tintColor.usingColorSpace(.sRGB)
-    }
-    guard let color = resolvedColor else { return nil }
-
-    var red: CGFloat = 0
-    var green: CGFloat = 0
-    var blue: CGFloat = 0
-    var alpha: CGFloat = 1
-    color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-
-    var rgbaData = Data(count: pixelWidth * pixelHeight * 4)
-    data.withUnsafeBytes { maskBytes in
-        rgbaData.withUnsafeMutableBytes { rgbaBytes in
-            guard let maskBaseAddress = maskBytes.baseAddress,
-                  let rgbaBaseAddress = rgbaBytes.baseAddress else {
-                return
-            }
-            let mask = maskBaseAddress.assumingMemoryBound(to: UInt8.self)
-            let rgba = rgbaBaseAddress.assumingMemoryBound(to: UInt8.self)
-            for y in 0..<pixelHeight {
-                for x in 0..<pixelWidth {
-                    let coverage = CGFloat(mask[y * maskBytesPerRow + x]) / 255
-                    let outputAlpha = coverage * alpha
-                    let offset = (y * pixelWidth + x) * 4
-                    rgba[offset] = UInt8((red * outputAlpha * 255).rounded())
-                    rgba[offset + 1] = UInt8((green * outputAlpha * 255).rounded())
-                    rgba[offset + 2] = UInt8((blue * outputAlpha * 255).rounded())
-                    rgba[offset + 3] = UInt8((outputAlpha * 255).rounded())
-                }
-            }
-        }
-    }
-
-    guard let provider = CGDataProvider(data: rgbaData as CFData) else { return nil }
-    return CGImage(width: pixelWidth,
-                   height: pixelHeight,
-                   bitsPerComponent: 8,
-                   bitsPerPixel: 32,
-                   bytesPerRow: pixelWidth * 4,
-                   space: CGColorSpaceCreateDeviceRGB(),
-                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                   provider: provider,
-                   decode: nil,
-                   shouldInterpolate: true,
-                   intent: .defaultIntent)
 }
 
 extension ProcessTable: ScrollbarControllerDelegate {
