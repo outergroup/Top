@@ -767,7 +767,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         }
         return [
             OuterframeContentPasteboardItem(typeIdentifier: NSPasteboard.PasteboardType.string.rawValue,
-                                       data: Data(selectedText.utf8))
+                                            data: Data(selectedText.utf8))
         ]
     }
 
@@ -1050,11 +1050,11 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     func scrollWheel(delta: CGPoint,
-                           at point: CGPoint,
-                           modifierFlags _: NSEvent.ModifierFlags,
-                           phase _: NSEvent.Phase,
-                           momentumPhase _: NSEvent.Phase,
-                           hasPreciseScrollingDeltas: Bool) {
+                     at point: CGPoint,
+                     modifierFlags _: NSEvent.ModifierFlags,
+                     phase _: NSEvent.Phase,
+                     momentumPhase _: NSEvent.Phase,
+                     hasPreciseScrollingDeltas: Bool) {
         guard let layers = layers else { return }
         _ = processTable?.scrollWheel(delta: delta, at: point, hasPreciseScrollingDeltas: hasPreciseScrollingDeltas, rootLayer: layers.rootLayer)
     }

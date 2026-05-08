@@ -895,11 +895,11 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     }
 
     func scrollWheel(delta: CGPoint,
-                           at point: CGPoint,
-                           modifierFlags _: NSEvent.ModifierFlags,
-                           phase _: NSEvent.Phase,
-                           momentumPhase _: NSEvent.Phase,
-                           hasPreciseScrollingDeltas: Bool) {
+                     at point: CGPoint,
+                     modifierFlags _: NSEvent.ModifierFlags,
+                     phase _: NSEvent.Phase,
+                     momentumPhase _: NSEvent.Phase,
+                     hasPreciseScrollingDeltas: Bool) {
 
         let root = layers.rootLayer
         let viewport = layers.openFiles.viewportLayer

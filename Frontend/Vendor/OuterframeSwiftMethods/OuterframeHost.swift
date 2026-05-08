@@ -485,8 +485,8 @@ struct OuterframeContentEditingCapabilities: Sendable {
     var acceptablePasteboardTypeIdentifiers: [String]
 
     init(canCopy: Bool,
-                canCut: Bool,
-                acceptablePasteboardTypeIdentifiers: [String]) {
+         canCut: Bool,
+         acceptablePasteboardTypeIdentifiers: [String]) {
         self.canCopy = canCopy
         self.canCut = canCut
         self.acceptablePasteboardTypeIdentifiers = acceptablePasteboardTypeIdentifiers

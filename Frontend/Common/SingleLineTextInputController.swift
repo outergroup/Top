@@ -460,7 +460,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
         let pasteTypes = isFocused ? acceptedPasteboardTypeIdentifiers : []
         let canCopy = isFocused && hasSelection
         return OuterframeContentEditingCapabilities(canCopy: canCopy,
-                                         canCut: canCopy,
-                                         acceptablePasteboardTypeIdentifiers: pasteTypes)
+                                                    canCut: canCopy,
+                                                    acceptablePasteboardTypeIdentifiers: pasteTypes)
     }
 }
