@@ -34,6 +34,9 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
         }
 
         switch message {
+        case .accessibilitySnapshotRequest(let requestID):
+            outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID, snapshot: nil)
+
         case .initializeContent(let arguments):
             let data = arguments.data ?? Data()
             let size = arguments.contentSize ?? .zero
@@ -82,10 +85,6 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
     func outerframeHostDidDisconnect(_ host: OuterframeHost) {
         print("Top: Socket closed during init")
         retainedSelf = nil
-    }
-
-    func outerframeHostAccessibilitySnapshot(_ host: OuterframeHost) -> OuterframeAccessibilitySnapshot? {
-        nil
     }
 }
 

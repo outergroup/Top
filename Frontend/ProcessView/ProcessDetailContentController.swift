@@ -3385,6 +3385,10 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
         case .copySelectedPasteboardRequest(let requestID):
             outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID, items: [])
 
+        case .accessibilitySnapshotRequest(let requestID):
+            outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,
+                                                             snapshot: accessibilitySnapshot())
+
         case .pasteboardContentDelivered:
             break
 
@@ -3402,10 +3406,6 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
     func outerframeHostDidDisconnect(_ host: OuterframeHost) {
         cleanup()
         retainedSelf = nil
-    }
-
-    func outerframeHostAccessibilitySnapshot(_ host: OuterframeHost) -> OuterframeAccessibilitySnapshot? {
-        accessibilitySnapshot()
     }
 }
 

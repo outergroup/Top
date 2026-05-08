@@ -21,21 +21,19 @@ enum OuterframeHostError: LocalizedError {
     }
 }
 
+typealias OuterframeHostMessageHandler = @MainActor (OuterframeHost, BrowserToContentMessage) -> Void
+typealias OuterframeHostDisconnectHandler = @MainActor (OuterframeHost) -> Void
+
 /// Delegate for receiving decoded messages from the browser.
 @MainActor
 protocol OuterframeHostDelegate: AnyObject {
     /// Called when a message is received from the browser.
-    /// Note: Some messages (displayLinkFired, displayLinkCallbackRegistered, imageWithSystemSymbolName,
-    /// accessibilitySnapshotRequest) are handled internally by OuterframeHost and will not be forwarded
-    /// to this delegate.
+    /// Note: displayLinkFired, displayLinkCallbackRegistered, and imageWithSystemSymbolName
+    /// are handled internally by OuterframeHost and will not be forwarded to this delegate.
     func outerframeHost(_ host: OuterframeHost, didReceiveMessage message: BrowserToContentMessage)
 
     /// Called when the connection to the browser is closed.
     func outerframeHostDidDisconnect(_ host: OuterframeHost)
-
-    /// Called when the browser requests an accessibility snapshot.
-    /// Return the current accessibility tree, or nil if not implemented.
-    func outerframeHostAccessibilitySnapshot(_ host: OuterframeHost) -> OuterframeAccessibilitySnapshot?
 }
 
 /// Helper class providing method-based API for browser communication
@@ -45,6 +43,8 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     /// Delegate for receiving decoded messages from the browser.
     weak var delegate: OuterframeHostDelegate?
+    private var messageHandler: OuterframeHostMessageHandler?
+    private var disconnectHandler: OuterframeHostDisconnectHandler?
 
     /// The URL that was navigated to (e.g., "https://example.com/apps/top.outer?host=server1")
     private var _url: String?
@@ -63,11 +63,15 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     /// Creates an OuterframeHost and starts the socket.
     /// Call `configure()` after receiving the initializeContent message to set context and appearance.
-    init(socketFD: Int32) {
+    init(socketFD: Int32,
+         messageHandler: OuterframeHostMessageHandler? = nil,
+         disconnectHandler: OuterframeHostDisconnectHandler? = nil) {
         let socket = SocketToBrowser()
         self.socket = socket
         self._url = nil
         self._bundleUrl = nil
+        self.messageHandler = messageHandler
+        self.disconnectHandler = disconnectHandler
 
         // Set ourselves as the socket delegate to decode messages
         socket.delegate = self
@@ -88,8 +92,20 @@ final class OuterframeHost: SocketToBrowserDelegate {
 
     nonisolated func socketToBrowserDidClose(_ socket: SocketToBrowser) {
         Task { @MainActor in
-            delegate?.outerframeHostDidDisconnect(self)
+            if let disconnectHandler {
+                disconnectHandler(self)
+            } else {
+                delegate?.outerframeHostDidDisconnect(self)
+            }
         }
+    }
+
+    func setMessageHandler(_ handler: OuterframeHostMessageHandler?) {
+        messageHandler = handler
+    }
+
+    func setDisconnectHandler(_ handler: OuterframeHostDisconnectHandler?) {
+        disconnectHandler = handler
     }
 
     private func handleRawMessage(messageData: Data) {
@@ -115,16 +131,16 @@ final class OuterframeHost: SocketToBrowserDelegate {
             handleImageWithSystemSymbolNameResponse(requestID: requestID, alphaMaskData: alphaMaskData, width: width, height: height, bytesPerRow: bytesPerRow)
             return
 
-        case .accessibilitySnapshotRequest(let requestID):
-            handleAccessibilitySnapshotRequest(requestID: requestID)
-            return
 
         default:
             break
         }
 
-        // Forward all other messages to the delegate
-        delegate?.outerframeHost(self, didReceiveMessage: message)
+        if let messageHandler {
+            messageHandler(self, message)
+        } else {
+            delegate?.outerframeHost(self, didReceiveMessage: message)
+        }
     }
 
     /// Configures the host with data from the initializeContent message.
@@ -293,17 +309,20 @@ final class OuterframeHost: SocketToBrowserDelegate {
         }
     }
 
-    // MARK: - Accessibility
-
-    private func handleAccessibilitySnapshotRequest(requestID: UUID) {
-        let snapshot = delegate?.outerframeHostAccessibilitySnapshot(self)
-            ?? OuterframeAccessibilitySnapshot.notImplementedSnapshot()
+    func sendAccessibilitySnapshotResponse(requestID: UUID, snapshotData: Data?) {
         Task {
             try? await socket.send(ContentToBrowserMessage.accessibilitySnapshotResponse(
                 requestID: requestID,
-                snapshotData: snapshot.serializedData()
+                snapshotData: snapshotData
             ).encode())
         }
+    }
+
+    func sendAccessibilitySnapshotResponse(requestID: UUID, snapshot: OuterframeAccessibilitySnapshot?) {
+        sendAccessibilitySnapshotResponse(
+            requestID: requestID,
+            snapshotData: (snapshot ?? OuterframeAccessibilitySnapshot.notImplementedSnapshot()).serializedData()
+        )
     }
 
     // MARK: - Pasteboard

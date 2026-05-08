@@ -3495,6 +3495,10 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
             outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID,
                                                               items: pasteboardItemsForCopy())
 
+        case .accessibilitySnapshotRequest(let requestID):
+            outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,
+                                                             snapshot: accessibilitySnapshot())
+
         case .pasteboardContentDelivered(let items):
             handlePasteboardItemsForPaste(items)
 
@@ -3512,9 +3516,5 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
     func outerframeHostDidDisconnect(_ host: OuterframeHost) {
         cleanup()
         retainedSelf = nil
-    }
-
-    func outerframeHostAccessibilitySnapshot(_ host: OuterframeHost) -> OuterframeAccessibilitySnapshot? {
-        accessibilitySnapshot()
     }
 }
