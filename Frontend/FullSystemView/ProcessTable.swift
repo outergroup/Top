@@ -219,6 +219,43 @@ final class ProcessTable {
     private var chevronUpImage: CGImage?
     private var chevronDownImage: CGImage?
 
+    private func isRowVisualReferenced(_ layerIndex: Int) -> Bool {
+        for (_, entries) in streamEntries {
+            if entries.contains(where: { $0.layerIndex == layerIndex }) {
+                return true
+            }
+        }
+
+        return additionalStreamEntries.contains(where: { $0.1.layerIndex == layerIndex })
+    }
+
+    private func ensureRowVisualIsAttached(_ layerIndex: Int) {
+        guard rowVisuals.indices.contains(layerIndex) else { return }
+
+        if rowVisualIsFree[layerIndex] {
+            rowVisualIsFree[layerIndex] = false
+            freeVisuals.removeAll { $0 == layerIndex }
+        }
+
+        if rowVisuals[layerIndex].container.superlayer !== listLayers.rowsContentLayer {
+            listLayers.rowsContentLayer.addSublayer(rowVisuals[layerIndex].container)
+        }
+    }
+
+    private func removeRowVisualIfUnreferenced(_ layerIndex: Int) {
+        guard rowVisuals.indices.contains(layerIndex),
+              !rowVisualIsFree[layerIndex],
+              !isRowVisualReferenced(layerIndex) else {
+            return
+        }
+
+        rowVisuals[layerIndex].container.removeFromSuperlayer()
+        rowVisualIsFree[layerIndex] = true
+        if !freeVisuals.contains(layerIndex) {
+            freeVisuals.append(layerIndex)
+        }
+    }
+
     init(appConnection: OuterframeHost, model: ProcessMonitorListModel, tableContainer: CALayer, position: CGPoint, mainController: ProcessMonitorListContentController) {
         self.appConnection = appConnection
         self.model = model
@@ -802,6 +839,7 @@ final class ProcessTable {
                         let i_prev_relative = previousIndex - prevEntriesRowStart
                         if (0..<prevEntries.count).contains(i_prev_relative) {
                             let layerIndex = prevEntries[i_prev_relative].layerIndex
+                            ensureRowVisualIsAttached(layerIndex)
 //                            print("found layer: \(layerIndex)")
 
                             if globalIndex != previousIndex {
@@ -854,6 +892,7 @@ final class ProcessTable {
                 for (prevEntriesRowStart, prevEntries) in prevStreamEntries {
                     if (prevEntriesRowStart..<prevEntriesRowStart+prevEntries.count).contains(previousIndex) {
                         let layerIndex = prevEntries[previousIndex - prevEntriesRowStart].layerIndex
+                        ensureRowVisualIsAttached(layerIndex)
                         queuedAnimations.append(.implicitSetFrame(layerIndex: layerIndex, position: newPosition))
                         toRemove.append(layerIndex)
                         return RowData(process: process, layerIndex: layerIndex)
@@ -881,9 +920,7 @@ final class ProcessTable {
         for layerIndex in rowVisuals.indices {
             if !rowVisualIsFree[layerIndex],
                !used[layerIndex] {
-                rowVisuals[layerIndex].container.removeFromSuperlayer()
-                rowVisualIsFree[layerIndex] = true
-                freeVisuals.append(layerIndex)
+                removeRowVisualIfUnreferenced(layerIndex)
             }
         }
 
@@ -907,11 +944,7 @@ final class ProcessTable {
 
         CATransaction.setCompletionBlock {
             for layerIndex in toRemove {
-                if !self.rowVisualIsFree[layerIndex] {
-                    self.rowVisuals[layerIndex].container.removeFromSuperlayer()
-                    self.rowVisualIsFree[layerIndex] = true
-                    self.freeVisuals.append(layerIndex)
-                }
+                self.removeRowVisualIfUnreferenced(layerIndex)
             }
         }
     }
@@ -971,6 +1004,7 @@ final class ProcessTable {
                     let layerIndex: Int
                     if currRange.contains(i) {
                         layerIndex = currEntries[i - currRange.lowerBound].layerIndex
+                        ensureRowVisualIsAttached(layerIndex)
                     } else {
                         layerIndex = createRowVisual()
                     }
