@@ -734,7 +734,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         updateSearchFieldDisplay()
         updateInputMode()
         updateEditingCapabilities()
-        sendSearchFieldCursorUpdate()
         CATransaction.commit()
         if filterChanged {
             lastSearchFilterText = currentFilter
@@ -3412,11 +3411,13 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .magnification, .magnificationEnded, .quickLook:
             break
 
-        case .textInputFocus:
-            break
+        case .textInputFocus(let fieldID, let hasFocus):
+            textInputFocus(fieldID: fieldID, hasFocus: hasFocus)
 
-        case .setCursorPosition:
-            break
+        case .setCursorPosition(let fieldID, let position, let modifySelection):
+            setCursorPosition(fieldID: fieldID,
+                              position: Int(position),
+                              modifySelection: modifySelection)
 
         case .windowActiveUpdate(let isActive):
             setWindowActive(isActive)
