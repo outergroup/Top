@@ -45,6 +45,10 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     private let defaultViewportLength = 40
 
     private static let defaultTimeWindowDuration: TimeInterval = 60
+    private static let searchFieldPasteboardTypeIdentifiers = [
+        NSPasteboard.PasteboardType.string.rawValue,
+        NSPasteboard.PasteboardType.rtf.rawValue
+    ]
 
     private var reconnectWorkItem: DispatchWorkItem?
     private var reconnectAttempts = 0
@@ -69,6 +73,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     private var quitDialog: ProcessQuitDialog?
     private var cpuChart: CPUHistoryChart?
     private var processTable: ProcessTable?
+    private var pendingSearchTextDrag: PendingSearchTextDrag?
 
     private var lastSentViewportState: ProcessMonitorListModel.ViewportState?
     private var pendingViewportAnnouncementTask: Task<Void, Never>?
@@ -80,6 +85,13 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
     private static let viewportAnnouncementDelayNanoseconds: UInt64 = 16_000_000
     private static let selectionValueLocale = Locale(identifier: "en_US_POSIX")
+    private static let searchTextDragThreshold: CGFloat = 3
+
+    private struct PendingSearchTextDrag {
+        let startPoint: CGPoint
+        let cursorIndex: Int
+        let selectedText: String
+    }
 
     init?(outerframeHost: OuterframeHost, appearance: NSAppearance, windowIsActive: Bool, with data: Data, size: CGSize, appConnection hostAppConnection: OuterframeAppConnection) {
         self.searchFieldInputController = .init(identifier: Self.searchFieldID)
@@ -129,6 +141,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         startProcessStream()
 
         updateEditingCapabilities()
+        updatePasteboardDropBehavior()
 
         model.effectiveAppearance.performAsCurrentDrawingAppearance {
 
@@ -765,34 +778,227 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             return []
         }
         return [
-            OuterframeContentPasteboardItem(typeIdentifier: NSPasteboard.PasteboardType.string.rawValue,
-                                            data: Data(selectedText.utf8))
+            OuterframeContentPasteboardItem(representations: [
+                OuterframeContentPasteboardRepresentation(typeIdentifier: NSPasteboard.PasteboardType.string.rawValue,
+                                                          data: Data(selectedText.utf8))
+            ])
         ]
     }
 
     func handlePasteboardItemsForPaste(_ items: [OuterframeContentPasteboardItem]) {
         guard searchFieldInputController.isFocused else { return }
+        insertPasteboardItemsIntoSearchField(items)
+    }
+
+    @discardableResult
+    private func insertPasteboardItemsIntoSearchField(_ items: [OuterframeContentPasteboardItem]) -> Bool {
         for item in items {
-            if item.typeIdentifier == NSPasteboard.PasteboardType.string.rawValue,
-               let stringValue = String(data: item.data, encoding: .utf8) {
+            if let representation = item.representations.first(where: {
+                $0.typeIdentifier == NSPasteboard.PasteboardType.string.rawValue
+            }),
+               let stringValue = String(data: representation.data, encoding: .utf8) {
                 searchFieldInputController.insertText(stringValue)
-                return
+                return true
             }
 
-            if item.typeIdentifier == NSPasteboard.PasteboardType.rtf.rawValue,
-               let attributed = try? NSAttributedString(data: item.data,
+            if let representation = item.representations.first(where: {
+                $0.typeIdentifier == NSPasteboard.PasteboardType.rtf.rawValue
+            }),
+               let attributed = try? NSAttributedString(data: representation.data,
                                                         options: [.documentType: NSAttributedString.DocumentType.rtf],
                                                         documentAttributes: nil) {
                 searchFieldInputController.insertText(attributed.string)
-                return
+                return true
             }
         }
+        return false
+    }
+
+    private func searchFieldDropPoint(_ point: CGPoint) -> CGPoint? {
+        guard let layers else { return nil }
+        let bar = layers.commandBarLayer
+        let search = layers.searchField
+        guard !search.container.isHidden else { return nil }
+
+        let pointInBar = bar.convert(point, from: layers.rootLayer)
+        guard bar.bounds.contains(pointInBar),
+              search.container.frame.contains(pointInBar) else {
+            return nil
+        }
+
+        return search.container.convert(pointInBar, from: bar)
+    }
+
+    private func pasteboardTypesContainSearchText(_ pasteboardTypes: [String]) -> Bool {
+        let types = Set(pasteboardTypes)
+        return Self.searchFieldPasteboardTypeIdentifiers.contains { types.contains($0) }
+    }
+
+    private func searchFieldHoverPoint(_ point: CGPoint) -> CGPoint? {
+        guard let layers else { return nil }
+        let bar = layers.commandBarLayer
+        let search = layers.searchField
+        guard !search.container.isHidden else { return nil }
+
+        let pointInBar = bar.convert(point, from: layers.rootLayer)
+        guard bar.bounds.contains(pointInBar),
+              search.container.frame.contains(pointInBar) else {
+            return nil
+        }
+
+        let pointInSearch = search.container.convert(pointInBar, from: bar)
+        if !search.clearButtonContainer.isHidden,
+           search.clearButtonContainer.frame.contains(pointInSearch) {
+            return nil
+        }
+        return pointInSearch
+    }
+
+    private func searchFieldAcceptsTextDrop(at point: CGPoint,
+                                            pasteboardTypes: [String],
+                                            operationMask: UInt32) -> Bool {
+        let operations = NSDragOperation(rawValue: UInt(operationMask))
+        guard operations.contains(.copy),
+              pasteboardTypesContainSearchText(pasteboardTypes),
+              searchFieldDropPoint(point) != nil else {
+            return false
+        }
+        return true
+    }
+
+    private func handlePasteboardItemsForDrop(at point: CGPoint, items: [OuterframeContentPasteboardItem]) {
+        guard let pointInSearch = searchFieldDropPoint(point) else { return }
+        focusSearchField()
+        let index = characterIndexForSearchField(xPosition: pointInSearch.x)
+        searchFieldInputController.setCursorPosition(index, modifySelection: false)
+        if insertPasteboardItemsIntoSearchField(items) {
+            updateSearchFieldDisplay()
+        }
+    }
+
+    private func beginDraggingSelectedSearchText(_ text: String) {
+        guard !text.isEmpty else { return }
+        let item = OuterframeContentPasteboardItem(representations: [
+            OuterframeContentPasteboardRepresentation(typeIdentifier: NSPasteboard.PasteboardType.string.rawValue,
+                                                      data: Data(text.utf8))
+        ])
+        let previewFrame = selectedSearchTextFrameInRoot()
+        let preview = searchTextDragPreviewImageData(for: text, size: previewFrame?.size)
+        outerframeHost.beginDraggingPasteboardItem(item,
+                                                   operationMask: .copy,
+                                                   previewPNGData: preview?.data,
+                                                   previewSize: preview?.size,
+                                                   previewFrameOrigin: previewFrame?.origin)
+    }
+
+    private func selectedSearchTextFrameInRoot() -> CGRect? {
+        guard let layers,
+              let range = searchFieldInputController.selectionRange,
+              !range.isEmpty else {
+            return nil
+        }
+
+        let field = layers.searchField
+        let text = searchFieldInputController.text
+        let textFrame = field.textLayer.frame
+        let maxWidth = max(textFrame.width, 0)
+        guard !text.isEmpty, maxWidth > 0 else { return nil }
+
+        let line = makeSearchFieldLine(for: text)
+        let offsets = selectionOffsets(line: line, text: text, range: range, maxWidth: maxWidth)
+        let startX = textFrame.minX + offsets.start
+        let endX = textFrame.minX + offsets.end
+        let width = max(0, min(endX - startX, maxWidth - offsets.start))
+        let availableWidth = max(0, field.backgroundLayer.bounds.width - startX)
+        let clampedWidth = min(width, availableWidth)
+        guard clampedWidth > 0.5 else { return nil }
+
+        let frameInSearch = CGRect(x: startX,
+                                   y: textFrame.minY,
+                                   width: clampedWidth,
+                                   height: textFrame.height)
+        return layers.rootLayer.convert(frameInSearch, from: field.container)
+    }
+
+    private func searchTextDragPreviewImageData(for text: String, size requestedSize: CGSize?) -> (data: Data, size: CGSize)? {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let displayText = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+        let previewText = displayText.isEmpty ? text : displayText
+        let fallbackTextSize = (previewText as NSString).size(withAttributes: [
+            .font: commandBarFont
+        ])
+        let width = max(ceil(requestedSize?.width ?? fallbackTextSize.width), 1)
+        let height = max(ceil(requestedSize?.height ?? fallbackTextSize.height), 1)
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byClipping
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: commandBarFont,
+            .foregroundColor: NSColor.textColor,
+            .paragraphStyle: paragraph
+        ]
+
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                            pixelsWide: Int(width * scale),
+                                            pixelsHigh: Int(height * scale),
+                                            bitsPerSample: 8,
+                                            samplesPerPixel: 4,
+                                            hasAlpha: true,
+                                            isPlanar: false,
+                                            colorSpaceName: .deviceRGB,
+                                            bytesPerRow: 0,
+                                            bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+            return nil
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.cgContext.scaleBy(x: scale, y: scale)
+        defer {
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        let textRect = NSRect(x: 0, y: 0, width: width, height: height)
+        (previewText as NSString).draw(in: textRect, withAttributes: textAttributes)
+
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return (data, CGSize(width: width, height: height))
+    }
+
+    private func handlePendingSearchTextDrag(to point: CGPoint) -> Bool {
+        guard let pendingSearchTextDrag else { return false }
+        let dx = point.x - pendingSearchTextDrag.startPoint.x
+        let dy = point.y - pendingSearchTextDrag.startPoint.y
+        guard hypot(dx, dy) >= Self.searchTextDragThreshold else {
+            return true
+        }
+
+        let selectedText = pendingSearchTextDrag.selectedText
+        self.pendingSearchTextDrag = nil
+        beginDraggingSelectedSearchText(selectedText)
+        return true
+    }
+
+    private func finishPendingSearchTextDragAsClick() -> Bool {
+        guard let pendingSearchTextDrag else { return false }
+        self.pendingSearchTextDrag = nil
+        focusSearchField()
+        searchFieldInputController.setCursorPosition(pendingSearchTextDrag.cursorIndex,
+                                                     modifySelection: false)
+        updateSearchFieldDisplay()
+        return true
     }
 
     func mouseDown(at point: CGPoint, modifierFlags: NSEvent.ModifierFlags, clickCount: Int) {
         guard let layers = layers else { return }
         let root = layers.rootLayer
         let rootPoint = point
+        pendingSearchTextDrag = nil
 
         if quitDialog?.handleMouseDown(at: rootPoint) == true {
             return
@@ -827,6 +1033,9 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     func mouseDragged(to point: CGPoint, modifierFlags: NSEvent.ModifierFlags) {
         guard let layers = layers else { return }
         let root = layers.rootLayer
+        if handlePendingSearchTextDrag(to: point) {
+            return
+        }
         if quitDialog?.handleMouseDragged(at: point) == true {
             return
         }
@@ -843,6 +1052,9 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     func mouseUp(at point: CGPoint, modifierFlags: NSEvent.ModifierFlags) {
         guard let layers = layers else { return }
         let root = layers.rootLayer
+        if finishPendingSearchTextDragAsClick() {
+            return
+        }
         if quitDialog?.handleMouseUp(at: point) == true {
             return
         }
@@ -857,6 +1069,13 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     func mouseMoved(to point: CGPoint, modifierFlags _: NSEvent.ModifierFlags) {
+        if searchFieldHoverPoint(point) != nil {
+            setCommandBarCursorIfNeeded(.iBeam)
+            return
+        } else if currentCommandBarCursor == .iBeam {
+            setCommandBarCursorIfNeeded(.arrow)
+        }
+
         if let chart = cpuChart, let rootLayer = layers?.rootLayer {
             let pointInChart = chart.rootLayer.convert(point, from: rootLayer)
             if chart.handleMouseMoved(at: pointInChart) {
@@ -2387,12 +2606,13 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
     private func updateEditingCapabilities() {
         let outer = searchFieldInputController.currentEditingCapabilities()
-        let capabilities = OuterframeContentEditingCapabilities(
-            canCopy: outer.canCopy,
-            canCut: outer.canCut,
-            acceptablePasteboardTypeIdentifiers: outer.acceptablePasteboardTypeIdentifiers
-        )
-        appConnection.setPasteboardCapabilities(capabilities)
+        let acceptedTypes = searchFieldInputController.currentAcceptedPasteboardTypeIdentifiers()
+        appConnection.setEditingCapabilities(canCopy: outer.canCopy, canCut: outer.canCut)
+        appConnection.setAcceptedPasteboardPasteTypes(acceptedTypes)
+    }
+
+    private func updatePasteboardDropBehavior() {
+        appConnection.setPasteboardDropBehaviorHitTest(acceptedTypes: Self.searchFieldPasteboardTypeIdentifiers)
     }
 
     private func searchFieldCursorRect(_ field: CommandBarSearchField, cachedLine: CTLine?) -> CGRect {
@@ -2507,11 +2727,24 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                 }
 
                 let wasFocused = searchFieldInputController.isFocused
+                let index = characterIndexForSearchField(xPosition: pointInSearch.x)
+                if wasFocused,
+                   clickCount == 1,
+                   !modifierFlags.contains(.shift),
+                   let selection = searchFieldInputController.selectionRange,
+                   selection.contains(index),
+                   let selectedText = searchFieldInputController.selectedTextContent(),
+                   !selectedText.isEmpty {
+                    pendingSearchTextDrag = PendingSearchTextDrag(startPoint: point,
+                                                                  cursorIndex: index,
+                                                                  selectedText: selectedText)
+                    return true
+                }
+
                 if !wasFocused {
                     focusSearchField(selectAll: clickCount >= 3)
                 }
 
-                let index = characterIndexForSearchField(xPosition: pointInSearch.x)
                 switch clickCount {
                 case 3...:
                     searchFieldInputController.selectAll()
@@ -2825,9 +3058,15 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
     // MARK: CPU History chart
 
-    private var currentHistoryCursor: PluginCursorType = .arrow
+    private var currentCommandBarCursor: PluginCursorType = .arrow
 
     private var countHistory: [SystemCountSample] = []
+
+    private func setCommandBarCursorIfNeeded(_ cursor: PluginCursorType) {
+        guard currentCommandBarCursor != cursor else { return }
+        currentCommandBarCursor = cursor
+        appConnection.setCursor(cursor)
+    }
 
     private func layoutCpuChartSection(in layers: Layers) {
         let chartSection = layers.system.cpuChartSectionLayer
@@ -3422,7 +3661,7 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .windowActiveUpdate(let isActive):
             setWindowActive(isActive)
 
-        case .copySelectedPasteboardRequest(let requestID):
+        case .selectionToPasteboardCopyRequest(let requestID):
             outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID,
                                                               items: pasteboardItemsForCopy())
 
@@ -3430,8 +3669,18 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,
                                                              snapshot: accessibilitySnapshot())
 
-        case .pasteboardContentDelivered(let items):
+        case .pasteboardContentPasted(let items):
             handlePasteboardItemsForPaste(items)
+
+        case .pasteboardDropHitTestRequest(let requestID, let point, let pasteboardTypes, let operationMask, _):
+            let accepted = searchFieldAcceptsTextDrop(at: point,
+                                                      pasteboardTypes: pasteboardTypes,
+                                                      operationMask: operationMask)
+            outerframeHost.sendPasteboardDropHitTestResponse(requestID: requestID,
+                                                             operationMask: accepted ? .copy : [])
+
+        case .pasteboardContentDropped(let point, let items):
+            handlePasteboardItemsForDrop(at: point, items: items)
 
         case .shutdown:
             print("Top: Received shutdown message, cleaning up...")

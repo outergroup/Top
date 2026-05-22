@@ -16,6 +16,11 @@ xcodebuild -project Top.xcodeproj -scheme Top -configuration Release build
 xcodebuild -project Top.xcodeproj -scheme TopBackend -configuration Release build
 ```
 
+The checked-in project does not contain a personal Apple development team.
+`Top` builds unsigned content bundles, and `TopBackend` uses ad-hoc signing.
+If a private release flow needs a specific Apple team, pass it as an
+`xcodebuild` setting from that private build environment.
+
 ## Run On macOS
 
 ```bash
@@ -37,6 +42,23 @@ sudo "$BUILD_ROOT/Release/TopBackend" --port "$PORT" --bundles-dir "$RUN_ROOT/bu
 ```
 
 Open `http://127.0.0.1:7351/` in [Outer Loop](https://outerloop.sh) or [Outer Frame](https://github.com/outergroup/outerframe).
+
+For Outer Loop-managed deployments, prefer a Unix socket. If `--port` is omitted, Top listens directly under `$XDG_RUNTIME_DIR` using the backend label:
+
+```bash
+"$BUILD_ROOT/Release/TopBackend" \
+  --label dev.outergroup.Top \
+  --bundles-dir "$RUN_ROOT/bundles"
+```
+
+You can also pass an explicit socket:
+
+```bash
+"$BUILD_ROOT/Release/TopBackend" \
+  --socket-path "$XDG_RUNTIME_DIR/dev.outergroup.Top" \
+  --label dev.outergroup.Top \
+  --bundles-dir "$RUN_ROOT/bundles"
+```
 
 
 ## Build For Linux
@@ -83,3 +105,13 @@ ssh -L 7351:127.0.0.1:7351 user@linux-host
 Then open `http://127.0.0.1:7351/` on your local machine. You can avoid all of this if you use Outer Loop to launch and connect to Top over SSH.
 
 `TopBackend` serves the frontend from `TopContent.bundle.macos-arm.aar` and `TopContent.bundle.macos-x86.aar`. The `--bundles-dir` argument must point to the directory containing those `.aar` files, not to the built `Top.bundle` directory.
+
+To create a release payload for a Home Screen-style installer, build both Linux
+backend architectures into `build/linux-package/RemoteLinuxBinaries`, then run:
+
+```bash
+./Scripts/package_release.sh
+```
+
+The archive is written to `build/release/Top.tar.gz`. Deployment-specific
+publishing should live outside this repository.

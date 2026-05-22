@@ -11,6 +11,7 @@ SOURCE_BUNDLE="$1"
 DESTINATION_DIR="$2"
 ARCHIVE_STEM="${3:-TopContent.bundle}"
 AA_TOOL="${AA_TOOL:-aa}"
+STRIP_TOOL="${STRIP_TOOL:-strip}"
 
 if [[ ! -d "$SOURCE_BUNDLE" ]]; then
     echo "error: source bundle not found at $SOURCE_BUNDLE" >&2
@@ -24,6 +25,11 @@ fi
 
 if ! command -v lipo >/dev/null 2>&1; then
     echo "error: required tool 'lipo' was not found on PATH" >&2
+    exit 1
+fi
+
+if ! command -v "$STRIP_TOOL" >/dev/null 2>&1; then
+    echo "error: required tool '$STRIP_TOOL' was not found on PATH" >&2
     exit 1
 fi
 
@@ -84,6 +90,12 @@ archive_platform_bundle() {
         mv "$thinned_executable" "$executable_path"
         chmod +x "$executable_path"
     fi
+
+    if command -v /usr/bin/codesign >/dev/null 2>&1; then
+        /usr/bin/codesign --remove-signature "$executable_path" >/dev/null 2>&1 || true
+    fi
+
+    "$STRIP_TOOL" -x "$executable_path"
 
     if command -v /usr/bin/codesign >/dev/null 2>&1; then
         /usr/bin/codesign --force --sign - --timestamp=none "$temp_bundle" >/dev/null

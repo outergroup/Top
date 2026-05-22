@@ -457,10 +457,11 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
     }
 
     func currentEditingCapabilities() -> OuterframeContentEditingCapabilities {
-        let pasteTypes = isFocused ? acceptedPasteboardTypeIdentifiers : []
         let canCopy = isFocused && hasSelection
-        return OuterframeContentEditingCapabilities(canCopy: canCopy,
-                                                    canCut: canCopy,
-                                                    acceptablePasteboardTypeIdentifiers: pasteTypes)
+        return OuterframeContentEditingCapabilities(canCopy: canCopy, canCut: canCopy)
+    }
+
+    func currentAcceptedPasteboardTypeIdentifiers() -> [String] {
+        isFocused ? acceptedPasteboardTypeIdentifiers : []
     }
 }

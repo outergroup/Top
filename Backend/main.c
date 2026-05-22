@@ -41,6 +41,7 @@
 #include <mach/mach_host.h>
 #include <mach/mach_time.h>
 #include <os/log.h>
+extern int launch_activate_socket(const char *name, int **fds, size_t *cnt);
 #endif
 
 #ifdef __linux__
@@ -5116,6 +5117,7 @@ static char g_backend_label[256] = {0};
 static char g_backend_identifier[256] = {0};
 static char g_listen_socket_path[PATH_MAX] = {0};
 static int g_listen_port = -1;
+static bool g_listen_socket_is_launchd_owned = false;
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
 static const char *kAppName = "Top";
@@ -5300,7 +5302,9 @@ static void handle_shutdown_signal(int signal_number) {
 static void cleanup_handler(void) {
     if (g_listen_socket_path[0] != '\0') {
         send_announcement("REMOVE", 0, g_listen_socket_path);
-        unlink(g_listen_socket_path);
+        if (!g_listen_socket_is_launchd_owned) {
+            unlink(g_listen_socket_path);
+        }
     } else if (g_listen_port >= 0) {
         send_announcement("REMOVE", g_listen_port, NULL);
     }
@@ -5324,7 +5328,7 @@ static bool parse_port_argument(const char *value, int *port_out) {
 
 static void print_usage(const char *program_name) {
     fprintf(stderr,
-            "Usage: %s [--port PORT] [--label LABEL] [--pid-mode ID] [--bundles-dir DIR] [--icon-file PATH]\n",
+            "Usage: %s [--port PORT | --socket-path PATH] [--launchd-socket-name NAME] [--label LABEL] [--pid-mode ID] [--bundles-dir DIR] [--icon-file PATH]\n",
             program_name && program_name[0] != '\0' ? program_name : "TopBackend");
 }
 
@@ -5370,10 +5374,13 @@ static int create_tcp_listener(int requested_port, int *actual_port_out) {
     return listen_fd;
 }
 
-static int create_unix_listener(void) {
-    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listen_fd < 0) {
-        fatal("socket");
+static void default_socket_path(char *out, size_t out_size) {
+    const char *label = g_backend_label[0] ? g_backend_label : "dev.outergroup.Top";
+#ifdef __APPLE__
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    if (runtime_dir && runtime_dir[0] != '\0') {
+        snprintf(out, out_size, "%s/%s", runtime_dir, label);
+        return;
     }
 
     const char *socket_root = getenv("HOME");
@@ -5383,17 +5390,29 @@ static int create_unix_listener(void) {
             socket_root = pw->pw_dir;
         }
     }
-    if (!socket_root || socket_root[0] == '\0') {
-        close(listen_fd);
-        fatal("HOME");
-    }
-#ifdef __APPLE__
-    snprintf(g_listen_socket_path, sizeof(g_listen_socket_path),
-             "%s/Library/dev.outergroup.Top/top.sock", socket_root);
+    snprintf(out, out_size, "%s/Library/%s", socket_root ? socket_root : ".", label);
 #else
-    snprintf(g_listen_socket_path, sizeof(g_listen_socket_path),
-             "%s/.outeragent/dev.outergroup.Top/top.sock", socket_root);
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    if (runtime_dir && runtime_dir[0] != '\0') {
+        snprintf(out, out_size, "%s/%s", runtime_dir, label);
+        return;
+    }
+
+    snprintf(out, out_size, "/run/user/%d/%s", (int)getuid(), label);
 #endif
+}
+
+static int create_unix_listener(const char *requested_socket_path) {
+    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+        fatal("socket");
+    }
+
+    if (requested_socket_path && requested_socket_path[0] != '\0') {
+        snprintf(g_listen_socket_path, sizeof(g_listen_socket_path), "%s", requested_socket_path);
+    } else {
+        default_socket_path(g_listen_socket_path, sizeof(g_listen_socket_path));
+    }
     char socket_dir[PATH_MAX];
     snprintf(socket_dir, sizeof(socket_dir), "%s", g_listen_socket_path);
     char *last_slash = strrchr(socket_dir, '/');
@@ -5433,6 +5452,34 @@ static int create_unix_listener(void) {
     return listen_fd;
 }
 
+#ifdef __APPLE__
+static int create_launchd_unix_listener(const char *socket_name, const char *socket_path) {
+    int *fds = NULL;
+    size_t count = 0;
+    int result = launch_activate_socket(socket_name, &fds, &count);
+    if (result != 0) {
+        errno = result;
+        fatal("launch_activate_socket");
+    }
+    if (!fds || count == 0) {
+        free(fds);
+        fatal("launchd socket");
+    }
+    int listen_fd = fds[0];
+    for (size_t i = 1; i < count; i++) {
+        close(fds[i]);
+    }
+    free(fds);
+    if (socket_path && socket_path[0] != '\0') {
+        snprintf(g_listen_socket_path, sizeof(g_listen_socket_path), "%s", socket_path);
+    } else {
+        default_socket_path(g_listen_socket_path, sizeof(g_listen_socket_path));
+    }
+    g_listen_socket_is_launchd_owned = true;
+    return listen_fd;
+}
+#endif
+
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
     struct sigaction shutdown_action;
@@ -5453,6 +5500,8 @@ int main(int argc, char *argv[]) {
     }
 
     int requested_port = -1;
+    char requested_socket_path[PATH_MAX] = "";
+    char launchd_socket_name[128] = "";
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
             strncpy(g_backend_label, argv[i + 1], sizeof(g_backend_label) - 1);
@@ -5479,7 +5528,26 @@ int main(int argc, char *argv[]) {
                 print_usage(argv[0]);
                 return 2;
             }
+            requested_socket_path[0] = '\0';
             i++;
+        } else if (strcmp(argv[i], "--socket-path") == 0 && i + 1 < argc) {
+            if (strlen(argv[i + 1]) >= sizeof(requested_socket_path)) {
+                fprintf(stderr, "--socket-path is too long.\n");
+                return 2;
+            }
+            snprintf(requested_socket_path, sizeof(requested_socket_path), "%s", argv[i + 1]);
+            requested_port = -1;
+            i++;
+#ifdef __APPLE__
+        } else if (strcmp(argv[i], "--launchd-socket-name") == 0 && i + 1 < argc) {
+            if (strlen(argv[i + 1]) >= sizeof(launchd_socket_name)) {
+                fprintf(stderr, "--launchd-socket-name is too long.\n");
+                return 2;
+            }
+            snprintf(launchd_socket_name, sizeof(launchd_socket_name), "%s", argv[i + 1]);
+            requested_port = -1;
+            i++;
+#endif
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -5516,8 +5584,12 @@ int main(int argc, char *argv[]) {
     int listen_fd = -1;
     if (requested_port >= 0) {
         listen_fd = create_tcp_listener(requested_port, &g_listen_port);
+#ifdef __APPLE__
+    } else if (launchd_socket_name[0] != '\0') {
+        listen_fd = create_launchd_unix_listener(launchd_socket_name, requested_socket_path);
+#endif
     } else {
-        listen_fd = create_unix_listener();
+        listen_fd = create_unix_listener(requested_socket_path);
     }
 
     set_blocking(listen_fd, false);
