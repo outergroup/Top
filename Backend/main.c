@@ -5180,6 +5180,8 @@ static void run_outerctl_announcement(const char *action, int port, const char *
             close(pipe_fds[1]);
         }
 
+        char frontend_id[512];
+        snprintf(frontend_id, sizeof(frontend_id), "%s:main", backend_id);
         const char *arguments[20];
         size_t argument_count = 0;
         arguments[argument_count++] = g_outerctl_path;
@@ -5188,6 +5190,8 @@ static void run_outerctl_announcement(const char *action, int port, const char *
             arguments[argument_count++] = "add";
             arguments[argument_count++] = "--backend";
             arguments[argument_count++] = backend_id;
+            arguments[argument_count++] = "--frontend-id";
+            arguments[argument_count++] = frontend_id;
             if (socket_path && socket_path[0] != '\0') {
                 arguments[argument_count++] = "--socket-path";
                 arguments[argument_count++] = socket_path;
@@ -5201,15 +5205,18 @@ static void run_outerctl_announcement(const char *action, int port, const char *
             arguments[argument_count++] = kAppName;
             arguments[argument_count++] = "--url";
             arguments[argument_count++] = "/";
+            arguments[argument_count++] = "--running";
             if (g_app_icon_path[0] != '\0') {
                 arguments[argument_count++] = "--icon-file";
                 arguments[argument_count++] = g_app_icon_path;
             }
-        } else if (strcmp(action, "REMOVE") == 0) {
+        } else if (strcmp(action, "STOPPED") == 0) {
             arguments[argument_count++] = "app";
-            arguments[argument_count++] = "remove";
+            arguments[argument_count++] = "add";
             arguments[argument_count++] = "--backend";
             arguments[argument_count++] = backend_id;
+            arguments[argument_count++] = "--frontend-id";
+            arguments[argument_count++] = frontend_id;
             if (socket_path && socket_path[0] != '\0') {
                 arguments[argument_count++] = "--socket-path";
                 arguments[argument_count++] = socket_path;
@@ -5218,6 +5225,15 @@ static void run_outerctl_announcement(const char *action, int port, const char *
                 arguments[argument_count++] = port_buffer;
             } else {
                 _exit(127);
+            }
+            arguments[argument_count++] = "--name";
+            arguments[argument_count++] = kAppName;
+            arguments[argument_count++] = "--url";
+            arguments[argument_count++] = "/";
+            arguments[argument_count++] = "--stopped";
+            if (g_app_icon_path[0] != '\0') {
+                arguments[argument_count++] = "--icon-file";
+                arguments[argument_count++] = g_app_icon_path;
             }
         } else {
             _exit(127);
@@ -5301,12 +5317,12 @@ static void handle_shutdown_signal(int signal_number) {
 
 static void cleanup_handler(void) {
     if (g_listen_socket_path[0] != '\0') {
-        send_announcement("REMOVE", 0, g_listen_socket_path);
+        send_announcement("STOPPED", 0, g_listen_socket_path);
         if (!g_listen_socket_is_launchd_owned) {
             unlink(g_listen_socket_path);
         }
     } else if (g_listen_port >= 0) {
-        send_announcement("REMOVE", g_listen_port, NULL);
+        send_announcement("STOPPED", g_listen_port, NULL);
     }
 }
 
@@ -5452,6 +5468,34 @@ static int create_unix_listener(const char *requested_socket_path) {
     return listen_fd;
 }
 
+#ifndef __APPLE__
+static int systemd_activated_listener(void) {
+    const char *listen_pid = getenv("LISTEN_PID");
+    const char *listen_fds = getenv("LISTEN_FDS");
+    if (!listen_pid || !listen_fds) {
+        return -1;
+    }
+
+    char *end = NULL;
+    long pid = strtol(listen_pid, &end, 10);
+    if (!end || *end != '\0' || pid != (long)getpid()) {
+        return -1;
+    }
+
+    end = NULL;
+    long fd_count = strtol(listen_fds, &end, 10);
+    if (!end || *end != '\0' || fd_count < 1) {
+        return -1;
+    }
+
+    unsetenv("LISTEN_PID");
+    unsetenv("LISTEN_FDS");
+    unsetenv("LISTEN_FDNAMES");
+    g_listen_socket_is_launchd_owned = true;
+    return 3;
+}
+#endif
+
 #ifdef __APPLE__
 static int create_launchd_unix_listener(const char *socket_name, const char *socket_path) {
     int *fds = NULL;
@@ -5589,7 +5633,19 @@ int main(int argc, char *argv[]) {
         listen_fd = create_launchd_unix_listener(launchd_socket_name, requested_socket_path);
 #endif
     } else {
-        listen_fd = create_unix_listener(requested_socket_path);
+#ifndef __APPLE__
+        listen_fd = systemd_activated_listener();
+        if (listen_fd >= 0) {
+            if (requested_socket_path[0] != '\0') {
+                snprintf(g_listen_socket_path, sizeof(g_listen_socket_path), "%s", requested_socket_path);
+            } else {
+                default_socket_path(g_listen_socket_path, sizeof(g_listen_socket_path));
+            }
+        }
+#endif
+        if (listen_fd < 0) {
+            listen_fd = create_unix_listener(requested_socket_path);
+        }
     }
 
     set_blocking(listen_fd, false);
