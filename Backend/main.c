@@ -28,7 +28,6 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <sys/time.h>
-#include <sys/wait.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -5111,26 +5110,12 @@ static void remove_closing_clients(void) {
     }
 }
 
-static char g_outerctl_path[PATH_MAX] = {0};
-static char g_app_icon_path[PATH_MAX] = {0};
 static char g_backend_label[256] = {0};
 static char g_backend_identifier[256] = {0};
 static char g_listen_socket_path[PATH_MAX] = {0};
 static int g_listen_port = -1;
 static bool g_listen_socket_is_launchd_owned = false;
 static volatile sig_atomic_t g_shutdown_requested = 0;
-
-static const char *kAppName = "Top";
-
-static const char *backend_announcement_identifier(void) {
-    if (g_backend_label[0] != '\0') {
-        return g_backend_label;
-    }
-    if (g_backend_identifier[0] != '\0') {
-        return g_backend_identifier;
-    }
-    return NULL;
-}
 
 static int ensure_directory_exists(const char *path) {
     if (!path || path[0] == '\0') {
@@ -5154,175 +5139,14 @@ static int ensure_directory_exists(const char *path) {
     return 0;
 }
 
-static void run_outerctl_announcement(const char *action, int port, const char *socket_path) {
-    const char *backend_id = backend_announcement_identifier();
-    if (g_outerctl_path[0] == '\0' || !backend_id) {
-        return;
-    }
-
-    char port_buffer[16];
-    snprintf(port_buffer, sizeof(port_buffer), "%d", port);
-    int pipe_fds[2] = {-1, -1};
-    if (pipe(pipe_fds) != 0) {
-        log_debug("Failed to create outerctl pipe: %s", strerror(errno));
-        pipe_fds[0] = -1;
-        pipe_fds[1] = -1;
-    }
-
-    pid_t child = fork();
-    if (child == 0) {
-        if (pipe_fds[0] >= 0) {
-            close(pipe_fds[0]);
-        }
-        if (pipe_fds[1] >= 0) {
-            dup2(pipe_fds[1], STDOUT_FILENO);
-            dup2(pipe_fds[1], STDERR_FILENO);
-            close(pipe_fds[1]);
-        }
-
-        char frontend_id[512];
-        snprintf(frontend_id, sizeof(frontend_id), "%s:main", backend_id);
-        const char *arguments[20];
-        size_t argument_count = 0;
-        arguments[argument_count++] = g_outerctl_path;
-        if (strcmp(action, "ADD") == 0) {
-            arguments[argument_count++] = "app";
-            arguments[argument_count++] = "add";
-            arguments[argument_count++] = "--backend";
-            arguments[argument_count++] = backend_id;
-            arguments[argument_count++] = "--frontend-id";
-            arguments[argument_count++] = frontend_id;
-            if (socket_path && socket_path[0] != '\0') {
-                arguments[argument_count++] = "--socket-path";
-                arguments[argument_count++] = socket_path;
-            } else if (port >= 0 && port <= 65535) {
-                arguments[argument_count++] = "--port";
-                arguments[argument_count++] = port_buffer;
-            } else {
-                _exit(127);
-            }
-            arguments[argument_count++] = "--name";
-            arguments[argument_count++] = kAppName;
-            arguments[argument_count++] = "--url";
-            arguments[argument_count++] = "/";
-            arguments[argument_count++] = "--running";
-            if (g_app_icon_path[0] != '\0') {
-                arguments[argument_count++] = "--icon-file";
-                arguments[argument_count++] = g_app_icon_path;
-            }
-        } else if (strcmp(action, "STOPPED") == 0) {
-            arguments[argument_count++] = "app";
-            arguments[argument_count++] = "add";
-            arguments[argument_count++] = "--backend";
-            arguments[argument_count++] = backend_id;
-            arguments[argument_count++] = "--frontend-id";
-            arguments[argument_count++] = frontend_id;
-            if (socket_path && socket_path[0] != '\0') {
-                arguments[argument_count++] = "--socket-path";
-                arguments[argument_count++] = socket_path;
-            } else if (port >= 0 && port <= 65535) {
-                arguments[argument_count++] = "--port";
-                arguments[argument_count++] = port_buffer;
-            } else {
-                _exit(127);
-            }
-            arguments[argument_count++] = "--name";
-            arguments[argument_count++] = kAppName;
-            arguments[argument_count++] = "--url";
-            arguments[argument_count++] = "/";
-            arguments[argument_count++] = "--stopped";
-            if (g_app_icon_path[0] != '\0') {
-                arguments[argument_count++] = "--icon-file";
-                arguments[argument_count++] = g_app_icon_path;
-            }
-        } else {
-            _exit(127);
-        }
-
-        arguments[argument_count] = NULL;
-        execv(g_outerctl_path, (char *const *)arguments);
-        _exit(127);
-    }
-
-    if (child > 0) {
-        if (pipe_fds[1] >= 0) {
-            close(pipe_fds[1]);
-        }
-        int status = 0;
-        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
-        }
-        char output[4096];
-        size_t output_length = 0;
-        if (pipe_fds[0] >= 0) {
-            while (output_length + 1 < sizeof(output)) {
-                ssize_t bytes_read = read(pipe_fds[0],
-                                          output + output_length,
-                                          sizeof(output) - output_length - 1);
-                if (bytes_read > 0) {
-                    output_length += (size_t)bytes_read;
-                    continue;
-                }
-                if (bytes_read == 0) {
-                    break;
-                }
-                if (errno == EINTR) {
-                    continue;
-                }
-                break;
-            }
-            close(pipe_fds[0]);
-        }
-        output[output_length] = '\0';
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            if (output_length > 0) {
-                log_debug("outerctl %s for %s completed with output: %s",
-                          action,
-                          backend_id,
-                          output);
-            }
-        } else if (WIFEXITED(status)) {
-            log_debug("outerctl %s for %s failed with exit status %d%s%s",
-                      action,
-                      backend_id,
-                      WEXITSTATUS(status),
-                      output_length > 0 ? ": " : "",
-                      output_length > 0 ? output : "");
-        } else if (WIFSIGNALED(status)) {
-            log_debug("outerctl %s for %s terminated by signal %d%s%s",
-                      action,
-                      backend_id,
-                      WTERMSIG(status),
-                      output_length > 0 ? ": " : "",
-                      output_length > 0 ? output : "");
-        }
-    } else {
-        if (pipe_fds[0] >= 0) {
-            close(pipe_fds[0]);
-        }
-        if (pipe_fds[1] >= 0) {
-            close(pipe_fds[1]);
-        }
-        log_debug("Failed to fork outerctl process: %s", strerror(errno));
-    }
-}
-
-static void send_announcement(const char *action, int port, const char *socket_path) {
-    run_outerctl_announcement(action, port, socket_path);
-}
-
 static void handle_shutdown_signal(int signal_number) {
     (void)signal_number;
     g_shutdown_requested = 1;
 }
 
 static void cleanup_handler(void) {
-    if (g_listen_socket_path[0] != '\0') {
-        send_announcement("STOPPED", 0, g_listen_socket_path);
-        if (!g_listen_socket_is_launchd_owned) {
-            unlink(g_listen_socket_path);
-        }
-    } else if (g_listen_port >= 0) {
-        send_announcement("STOPPED", g_listen_port, NULL);
+    if (g_listen_socket_path[0] != '\0' && !g_listen_socket_is_launchd_owned) {
+        unlink(g_listen_socket_path);
     }
 }
 
@@ -5534,15 +5358,6 @@ int main(int argc, char *argv[]) {
     sigaction(SIGTERM, &shutdown_action, NULL);
     sigaction(SIGHUP, &shutdown_action, NULL);
 
-    const char *outerctl_path = getenv("OUTERCTL_PATH");
-    if (outerctl_path && strlen(outerctl_path) >= sizeof(g_outerctl_path)) {
-        fprintf(stderr, "OUTERCTL_PATH is too long.\n");
-        return 2;
-    }
-    if (outerctl_path && outerctl_path[0] != '\0') {
-        snprintf(g_outerctl_path, sizeof(g_outerctl_path), "%s", outerctl_path);
-    }
-
     int requested_port = -1;
     char requested_socket_path[PATH_MAX] = "";
     char launchd_socket_name[128] = "";
@@ -5560,11 +5375,10 @@ int main(int argc, char *argv[]) {
                      "%s/TopContent.bundle.macos-x86.aar", argv[i + 1]);
             i++;
         } else if (strcmp(argv[i], "--icon-file") == 0 && i + 1 < argc) {
-            if (strlen(argv[i + 1]) >= sizeof(g_app_icon_path)) {
+            if (strlen(argv[i + 1]) >= PATH_MAX) {
                 fprintf(stderr, "--icon-file path is too long.\n");
                 return 2;
             }
-            snprintf(g_app_icon_path, sizeof(g_app_icon_path), "%s", argv[i + 1]);
             i++;
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             if (!parse_port_argument(argv[i + 1], &requested_port)) {
@@ -5655,12 +5469,10 @@ int main(int argc, char *argv[]) {
 
     atexit(cleanup_handler);
     if (g_listen_port >= 0) {
-        send_announcement("ADD", g_listen_port, NULL);
         log_debug("Listening on http://127.0.0.1:%d/", g_listen_port);
         printf("TopBackend listening on http://127.0.0.1:%d/\n", g_listen_port);
         fflush(stdout);
     } else {
-        send_announcement("ADD", 0, g_listen_socket_path);
         log_debug("Listening on %s/", g_listen_socket_path);
     }
 
