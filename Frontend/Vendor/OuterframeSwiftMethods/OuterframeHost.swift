@@ -518,11 +518,14 @@ final class OuterframeHost: SocketToBrowserDelegate {
     }
 
     func sendAccessibilitySnapshotResponse(requestID: UUID, snapshotData: Data?) {
-        Task {
-            try? await socket.send(ContentToBrowserMessage.accessibilitySnapshotResponse(
-                requestID: requestID,
-                snapshotData: snapshotData
-            ).encode())
+        let message = ContentToBrowserMessage.accessibilitySnapshotResponse(
+            requestID: requestID,
+            snapshotData: snapshotData
+        )
+        do {
+            try socket.sendBlocking(message.encode())
+        } catch {
+            print("OuterframeHost: Failed to send accessibilitySnapshotResponse: \(error)")
         }
     }
 
