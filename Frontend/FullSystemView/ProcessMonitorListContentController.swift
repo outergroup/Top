@@ -323,7 +323,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         layers = nil
         searchFieldInputController.delegate = nil
         lastSearchFilterText = ""
-        appConnection.sendTextCursorUpdate(cursors: [])
+        appConnection.sendTextInputGeometryUpdate(nil)
     }
 
     func accessibilitySnapshot() -> OuterframeAccessibilitySnapshot? {
@@ -1365,6 +1365,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             search.backgroundLayer.borderColor = commandBarBorder
             search.placeholderLayer.foregroundColor = NSColor.placeholderTextColor.cgColor
             search.textLayer.foregroundColor = NSColor.textColor.cgColor
+            search.caretLayer.backgroundColor = NSColor.textColor.cgColor
             search.selectionLayer.backgroundColor = (searchFieldInputController.isFocused && model.isWindowActive ?
                                                      NSColor.selectedTextBackgroundColor.cgColor : NSColor.unemphasizedSelectedTextBackgroundColor.withAlphaComponent(isLightTheme ? 0.75 : 0.9).cgColor)
             quitDialog?.updateAppearance()
@@ -2053,6 +2054,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         let placeholderLayer: CATextLayer
         let textLayer: CATextLayer
         let selectionLayer: CALayer
+        let caretLayer: CALayer
         let symbolName: String
         let clearSymbolName: String
     }
@@ -2084,6 +2086,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     private let searchFieldIconSpacing: CGFloat = 6
     private let searchFieldClearButtonSpacing: CGFloat = 6
     private let searchFieldCaretWidth: CGFloat = 1
+    private let searchFieldCaretBlinkAnimationKey = "searchFieldCaretBlink"
     private let searchFieldClearButtonDefaultSize = CGSize(width: 14, height: 14)
     private let searchFieldClearSymbolName = "xmark.circle.fill"
     private let commandBarFont = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -2171,6 +2174,11 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         textLayer.isHidden = true
         container.addSublayer(textLayer)
 
+        let caretLayer = CALayer()
+        caretLayer.backgroundColor = CGColor.clear
+        caretLayer.isHidden = true
+        container.addSublayer(caretLayer)
+
         return CommandBarSearchField(container: container,
                                      backgroundLayer: background,
                                      iconLayer: iconLayer,
@@ -2179,6 +2187,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                                      placeholderLayer: placeholderLayer,
                                      textLayer: textLayer,
                                      selectionLayer: selectionLayer,
+                                     caretLayer: caretLayer,
                                      symbolName: symbolName,
                                      clearSymbolName: searchFieldClearSymbolName)
     }
@@ -2391,6 +2400,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             field.placeholderLayer.frame = .zero
             field.textLayer.frame = .zero
             field.selectionLayer.frame = .zero
+            field.caretLayer.frame = .zero
             return
         }
         field.container.isHidden = false
@@ -2450,6 +2460,12 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                                             width: 0,
                                             height: textHeight)
         field.selectionLayer.cornerRadius = 0
+        if field.caretLayer.frame == .zero {
+            field.caretLayer.frame = CGRect(x: textStart,
+                                            y: textY,
+                                            width: searchFieldCaretWidth,
+                                            height: textHeight)
+        }
     }
 
     private func updateSearchFieldDisplay() {
@@ -2524,7 +2540,8 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                 field.selectionLayer.backgroundColor = selectionColor
             }
         }
-        sendSearchFieldCursorUpdate(cachedLine: cachedLine)
+        updateSearchFieldCaret(cachedLine: cachedLine)
+        sendSearchFieldTextInputGeometryUpdate(cachedLine: cachedLine)
     }
 
     private func updateSearchFieldFocusAppearance() {
@@ -2615,10 +2632,10 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         appConnection.setPasteboardDropBehaviorHitTest(acceptedTypes: Self.searchFieldPasteboardTypeIdentifiers)
     }
 
-    private func searchFieldCursorRect(_ field: CommandBarSearchField, cachedLine: CTLine?) -> CGRect {
+    private func searchFieldCaretRect(_ field: CommandBarSearchField, cachedLine: CTLine?) -> CGRect {
         let textFrame = field.textLayer.frame
         let contentsScale = max(field.textLayer.contentsScale, 1)
-        let cursorWidth = max(searchFieldCaretWidth, 1 / contentsScale)
+        let caretWidth = max(searchFieldCaretWidth, 1 / contentsScale)
         let maxWidth = max(textFrame.width, 0)
         let offset: CGFloat
         if let cachedLine, !searchFieldInputController.text.isEmpty && maxWidth > 0 {
@@ -2631,17 +2648,51 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         }
 
         let proposedX = min(max(textFrame.minX + offset, textFrame.minX), textFrame.minX + maxWidth)
-        let maxCursorX = field.backgroundLayer.bounds.width - cursorWidth
-        let limitedX = max(textFrame.minX, min(proposedX, maxCursorX))
+        let maxCaretX = field.backgroundLayer.bounds.width - caretWidth
+        let limitedX = max(textFrame.minX, min(proposedX, maxCaretX))
         return CGRect(x: limitedX,
                       y: textFrame.minY,
-                      width: cursorWidth,
+                      width: caretWidth,
                       height: textFrame.height)
     }
 
-    private func sendSearchFieldCursorUpdate(cachedLine: CTLine? = nil) {
+    private func updateSearchFieldCaret(cachedLine: CTLine? = nil) {
+        guard let layers = layers else { return }
+        let field = layers.searchField
+        let showCaret = searchFieldInputController.isFocused &&
+            model.isWindowActive &&
+            !searchFieldInputController.hasSelection
+
+        guard showCaret else {
+            field.caretLayer.isHidden = true
+            field.caretLayer.removeAnimation(forKey: searchFieldCaretBlinkAnimationKey)
+            return
+        }
+
+        let caretFrame = searchFieldCaretRect(field, cachedLine: cachedLine)
+        field.caretLayer.frame = caretFrame
+        model.effectiveAppearance.performAsCurrentDrawingAppearance {
+            field.caretLayer.backgroundColor = NSColor.textColor.cgColor
+        }
+        field.caretLayer.isHidden = false
+        field.caretLayer.opacity = 1
+
+        if field.caretLayer.animation(forKey: searchFieldCaretBlinkAnimationKey) == nil {
+            let animation = CABasicAnimation(keyPath: "opacity")
+            animation.fromValue = 1
+            animation.toValue = 0
+            animation.duration = 0.55
+            animation.beginTime = CACurrentMediaTime() + 0.55
+            animation.autoreverses = true
+            animation.repeatCount = .infinity
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            field.caretLayer.add(animation, forKey: searchFieldCaretBlinkAnimationKey)
+        }
+    }
+
+    private func sendSearchFieldTextInputGeometryUpdate(cachedLine: CTLine? = nil) {
         guard let layers = layers else {
-            appConnection.sendTextCursorUpdate(cursors: [])
+            appConnection.sendTextInputGeometryUpdate(nil)
             return
         }
 
@@ -2650,22 +2701,21 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         let hasSelection = searchFieldInputController.hasSelection
 
         if isFocused && !hasSelection {
-            let cursorFrame = searchFieldCursorRect(field, cachedLine: cachedLine)
-            let rootPosition = field.container.convert(cursorFrame.origin, to: layers.rootLayer)
+            let caretFrame = searchFieldCaretRect(field, cachedLine: cachedLine)
+            let rootPosition = field.container.convert(caretFrame.origin, to: layers.rootLayer)
 
             // Convert from CALayer's bottom-left coordinates to top-left coordinates
             // (OuterframeView expects y=0 at top)
             let rootHeight = layers.rootLayer.bounds.height
-            let topLeftY = rootHeight - rootPosition.y - cursorFrame.height
-            let cursor = OuterframeContentTextCursorSnapshot(fieldID: Self.searchFieldID,
-                                                             rect: CGRect(x: rootPosition.x,
-                                                                          y: topLeftY,
-                                                                          width: cursorFrame.width,
-                                                                          height: cursorFrame.height),
-                                                             visible: true)
-            appConnection.sendTextCursorUpdate(cursors: [cursor])
+            let topLeftY = rootHeight - rootPosition.y - caretFrame.height
+            let geometry = OuterframeContentTextInputGeometry(fieldID: Self.searchFieldID,
+                                                              rect: CGRect(x: rootPosition.x,
+                                                                           y: topLeftY,
+                                                                           width: caretFrame.width,
+                                                                           height: caretFrame.height))
+            appConnection.sendTextInputGeometryUpdate(geometry)
         } else {
-            appConnection.sendTextCursorUpdate(cursors: [])
+            appConnection.sendTextInputGeometryUpdate(nil)
         }
     }
 
