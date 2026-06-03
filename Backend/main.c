@@ -368,6 +368,9 @@ static size_t encode_process_stream_frame(unsigned char *buffer,
                                           const ProcessSnapshotView *view,
                                           const ProcessWindowRequest *request,
                                           ProcessOrderCache *order_cache);
+#ifdef __linux__
+static bool read_process_short_command_from_cmdline(int pid, char *out, size_t out_size);
+#endif
 static bool read_process_short_command(int pid, char *out, size_t out_size);
 static void resolve_username(uid_t uid, char *out, size_t out_size);
 static CpuHistorySample *copy_cpu_history(size_t *count_out, uint64_t *ticks_out);
@@ -1478,6 +1481,9 @@ static int collect_process_records(ProcessRecord **records_out,
             if (!read_process_short_command(pid, command, sizeof(command))) {
                 strncpy(command, comm, sizeof(command) - 1);
                 command[sizeof(command) - 1] = '\0';
+                if (strlen(command) == 15) {
+                    (void)read_process_short_command_from_cmdline(pid, command, sizeof(command));
+                }
             }
             slot->identity = create_process_identity(pid, is_kernel_thread, user, command);
             if (!slot->identity) {
@@ -1965,6 +1971,45 @@ static bool read_process_launch_time(int pid, char *out, size_t out_size) {
     return true;
 }
 
+static bool read_process_short_command_from_cmdline(int pid, char *out, size_t out_size) {
+    if (pid <= 0 || !out || out_size == 0) {
+        return false;
+    }
+
+    char cmdline_path[64];
+    snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%d/cmdline", pid);
+    FILE *fp = fopen(cmdline_path, "r");
+    if (!fp) {
+        return false;
+    }
+
+    char buffer[512];
+    size_t length = fread(buffer, 1, sizeof(buffer) - 1, fp);
+    fclose(fp);
+    if (length == 0) {
+        return false;
+    }
+
+    char *first_separator = memchr(buffer, '\0', length);
+    if (first_separator) {
+        *first_separator = '\0';
+    } else {
+        buffer[length] = '\0';
+    }
+    if (buffer[0] == '\0') {
+        return false;
+    }
+
+    char short_command[MAX_PROCESS_COMMAND_LEN];
+    extract_short_command(buffer, short_command, sizeof(short_command));
+    if (short_command[0] == '\0') {
+        return false;
+    }
+
+    snprintf(out, out_size, "%s", short_command);
+    return true;
+}
+
 static bool read_process_short_command(int pid, char *out, size_t out_size) {
     if (pid <= 0 || !out || out_size == 0) {
         return false;
@@ -1985,6 +2030,13 @@ static bool read_process_short_command(int pid, char *out, size_t out_size) {
     size_t len = strlen(out);
     if (len > 0 && out[len - 1] == '\n') {
         out[len - 1] = '\0';
+        len--;
+    }
+    if (len == 15) {
+        char cmdline_command[MAX_PROCESS_COMMAND_LEN];
+        if (read_process_short_command_from_cmdline(pid, cmdline_command, sizeof(cmdline_command))) {
+            snprintf(out, out_size, "%s", cmdline_command);
+        }
     }
     return out[0] != '\0';
 }
