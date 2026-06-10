@@ -3385,6 +3385,12 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
         case .selectionToPasteboardCopyRequest(let requestID):
             outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID, items: [])
 
+        case .selectionToPasteboardCutRequest(let requestID):
+            outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID, items: [])
+
+        case .editCommandValidationRequest(let requestID, _):
+            outerframeHost.sendEditCommandValidationResponse(requestID: requestID, enabledCommands: [])
+
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,
                                                              snapshot: accessibilitySnapshot())

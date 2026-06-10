@@ -785,6 +785,18 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         ]
     }
 
+    func pasteboardItemsForCut() -> [OuterframeContentPasteboardItem] {
+        let items = pasteboardItemsForCopy()
+        if !items.isEmpty {
+            searchFieldInputController.deleteBackward()
+        }
+        return items
+    }
+
+    func enabledEditCommands(in requestedCommands: OuterframeEditCommandSet) -> OuterframeEditCommandSet {
+        searchFieldInputController.enabledEditCommands(in: requestedCommands)
+    }
+
     func handlePasteboardItemsForPaste(_ items: [OuterframeContentPasteboardItem]) {
         guard searchFieldInputController.isFocused else { return }
         insertPasteboardItemsIntoSearchField(items)
@@ -2622,9 +2634,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     private func updateEditingCapabilities() {
-        let outer = searchFieldInputController.currentEditingCapabilities()
         let acceptedTypes = searchFieldInputController.currentAcceptedPasteboardTypeIdentifiers()
-        appConnection.setEditingCapabilities(canCopy: outer.canCopy, canCut: outer.canCut)
         appConnection.setAcceptedPasteboardPasteTypes(acceptedTypes)
     }
 
@@ -2851,11 +2861,35 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         updateSearchFieldDisplay()
         updateEditingCapabilities()
 
-        let selectedText = searchFieldInputController.selectedTextContent() ?? ""
-        let attributedText = NSAttributedString(string: selectedText,
-                                                attributes: [.font: commandBarFont])
-        appConnection.showContextMenu(for: attributedText, at: point)
+        showSearchFieldContextMenu(at: point)
         return true
+    }
+
+    private func showSearchFieldContextMenu(at point: CGPoint) {
+        let selectedText = searchFieldInputController.selectedTextContent() ?? ""
+        let hasSelection = !selectedText.isEmpty
+        let items = [
+            OuterframeContextMenuItem(id: "cut",
+                                      title: "Cut",
+                                      action: .standardCut,
+                                      isEnabled: hasSelection),
+            OuterframeContextMenuItem(id: "copy",
+                                      title: "Copy",
+                                      action: .standardCopy,
+                                      isEnabled: hasSelection),
+            OuterframeContextMenuItem(id: "paste",
+                                      title: "Paste",
+                                      action: .standardPaste,
+                                      isEnabled: searchFieldInputController.isFocused)
+        ]
+
+        let attributedText = hasSelection
+            ? NSAttributedString(string: selectedText, attributes: [.font: commandBarFont])
+            : nil
+        appConnection.showContextMenu(menuID: UUID(),
+                                      items: items,
+                                      at: point,
+                                      attributedText: attributedText)
     }
 
     private func clearSelectedProcess() {
@@ -3714,6 +3748,14 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .selectionToPasteboardCopyRequest(let requestID):
             outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID,
                                                               items: pasteboardItemsForCopy())
+
+        case .selectionToPasteboardCutRequest(let requestID):
+            outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID,
+                                                              items: pasteboardItemsForCut())
+
+        case .editCommandValidationRequest(let requestID, let commands):
+            outerframeHost.sendEditCommandValidationResponse(requestID: requestID,
+                                                             enabledCommands: enabledEditCommands(in: commands))
 
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,

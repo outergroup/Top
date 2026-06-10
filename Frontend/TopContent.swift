@@ -93,6 +93,13 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID, snapshot: nil)
 
+        case .selectionToPasteboardCopyRequest(let requestID),
+             .selectionToPasteboardCutRequest(let requestID):
+            outerframeHost.sendCopySelectedPasteboardResponse(requestID: requestID, items: [])
+
+        case .editCommandValidationRequest(let requestID, _):
+            outerframeHost.sendEditCommandValidationResponse(requestID: requestID, enabledCommands: [])
+
         case .initializeContent(let arguments):
             let data = arguments.data ?? Data()
             let size = arguments.contentSize ?? .zero

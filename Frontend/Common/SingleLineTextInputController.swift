@@ -456,9 +456,27 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
         delegate?.textInputControllerDidChangeState()
     }
 
-    func currentEditingCapabilities() -> OuterframeContentEditingCapabilities {
-        let canCopy = isFocused && hasSelection
-        return OuterframeContentEditingCapabilities(canCopy: canCopy, canCut: canCopy)
+    func enabledEditCommands(in requestedCommands: OuterframeEditCommandSet) -> OuterframeEditCommandSet {
+        var enabledCommands: OuterframeEditCommandSet = []
+
+        if isFocused && hasSelection {
+            if requestedCommands.contains(.copy) {
+                enabledCommands.insert(.copy)
+            }
+            if requestedCommands.contains(.cut) {
+                enabledCommands.insert(.cut)
+            }
+        }
+
+        if requestedCommands.contains(.selectAll), isFocused, !text.isEmpty {
+            enabledCommands.insert(.selectAll)
+        }
+
+        if requestedCommands.contains(.paste), isFocused {
+            enabledCommands.insert(.paste)
+        }
+
+        return enabledCommands
     }
 
     func currentAcceptedPasteboardTypeIdentifiers() -> [String] {
