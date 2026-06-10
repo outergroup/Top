@@ -111,6 +111,8 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
                                      proxyPort: arguments.proxy?.port ?? 0,
                                      proxyUsername: arguments.proxy?.username,
                                      proxyPassword: arguments.proxy?.password)
+            outerframeHost.setTitle("Top")
+            outerframeHost.setIcon(.bundleResource(path: "Contents/Resources/app-icon.png"))
 
             let appearance_: NSAppearance = arguments.appearance ?? NSAppearance.currentDrawing()
             let windowIsActive = arguments.windowIsActive ?? true

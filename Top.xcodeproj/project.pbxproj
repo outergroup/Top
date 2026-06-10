@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		37C56F7A2FE9D41100E7F401 /* app-icon.png in Resources */ = {isa = PBXBuildFile; fileRef = 37C56F792FE9D41100E7F401 /* app-icon.png */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		37630D972F495DF4000075B1 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -24,6 +28,7 @@
 		37630D912F495DDD000075B1 /* Top.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = Top.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		37630D992F495DF4000075B1 /* TopBackend */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = TopBackend; sourceTree = BUILT_PRODUCTS_DIR; };
 		37B4F9812FA1826700873894 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		37C56F792FE9D41100E7F401 /* app-icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "app-icon.png"; sourceTree = "<group>"; };
 		37FA8AEA2E6A2B920028D2A7 /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -111,6 +116,7 @@
 			isa = PBXGroup;
 			children = (
 				37B4F9812FA1826700873894 /* README.md */,
+				37C56F792FE9D41100E7F401 /* app-icon.png */,
 				37956F722FA1734800944056 /* Backend */,
 				37956F832FA1734B00944056 /* Frontend */,
 				37A924F22D3D650B001E37BB /* Frameworks */,
@@ -213,6 +219,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				37C56F7A2FE9D41100E7F401 /* app-icon.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

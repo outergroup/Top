@@ -42,6 +42,12 @@ struct InitializeContentArguments {
     }
 }
 
+enum OuterframePresentationIcon: Equatable {
+    case none
+    case bundleResource(path: String)
+    case stagedFile(path: String)
+}
+
 fileprivate enum InitArgKind: UInt8 {
     case data = 1
     case contentSize = 2
@@ -942,6 +948,8 @@ enum ContentToBrowserMessage {
     case historyPushEntry(entryID: UUID, url: String?)
     case historyReplaceEntry(entryID: UUID, url: String?)
     case historyGo(delta: Int32)
+    case setTitle(String?)
+    case setIcon(OuterframePresentationIcon)
 
     func encode() throws -> Data {
         switch self {
@@ -1132,6 +1140,31 @@ enum ContentToBrowserMessage {
             var payload = Data(capacity: 4)
             payload.append(int32: delta)
             return makeContentToBrowserFrame(type: .historyGo, payload: payload)
+
+        case .setTitle(let title):
+            var payload = OffsetPayloadBuilder()
+            payload.append(uint8: title != nil ? 1 << 0 : 0)
+            try payload.append(stringReference: title ?? "")
+            return makeContentToBrowserFrame(type: .setTitle, payload: try payload.finalize())
+
+        case .setIcon(let icon):
+            var payload = OffsetPayloadBuilder()
+            let iconKind: UInt8
+            let iconPath: String
+            switch icon {
+            case .none:
+                iconKind = 0
+                iconPath = ""
+            case .bundleResource(let path):
+                iconKind = 1
+                iconPath = path
+            case .stagedFile(let path):
+                iconKind = 2
+                iconPath = path
+            }
+            payload.append(uint8: iconKind)
+            try payload.append(stringReference: iconPath)
+            return makeContentToBrowserFrame(type: .setIcon, payload: try payload.finalize())
         }
     }
 
@@ -1388,6 +1421,32 @@ enum ContentToBrowserMessage {
             let preferredSize = flags & (1 << 1) != 0 ? CGSize(width: width, height: height) : nil
             return .openNewWindow(url: url, displayString: displayString,
                                   preferredSize: preferredSize)
+
+        case .setTitle:
+            guard let flags = cursor.readUInt8(),
+                  let titleReference = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            let title = flags & (1 << 0) != 0 ? titleReference : nil
+            return .setTitle(title)
+
+        case .setIcon:
+            guard let iconKind = cursor.readUInt8(),
+                  let iconPath = cursor.readStringReference() else {
+                throw OuterframeContentSocketMessageError.truncatedPayload
+            }
+            let icon: OuterframePresentationIcon
+            switch iconKind {
+            case 0:
+                icon = .none
+            case 1:
+                icon = .bundleResource(path: iconPath)
+            case 2:
+                icon = .stagedFile(path: iconPath)
+            default:
+                icon = .none
+            }
+            return .setIcon(icon)
         }
     }
 }
@@ -1640,6 +1699,8 @@ private enum ContentToBrowserMessageKind: UInt16 {
     case setPasteboardDropBehaviorHitTest = 2024
     case releaseDroppedFileAccess = 2026
     case filePromiseWriteResponse = 2027
+    case setTitle = 2030
+    case setIcon = 2031
 
     // Assign new indices in contiguous blocks to make the switch statement more efficient
 }

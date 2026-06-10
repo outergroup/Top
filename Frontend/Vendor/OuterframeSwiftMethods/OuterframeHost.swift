@@ -315,6 +315,20 @@ final class OuterframeHost: SocketToBrowserDelegate {
         }
     }
 
+    // MARK: - Presentation
+
+    func setTitle(_ title: String?) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.setTitle(title).encode())
+        }
+    }
+
+    func setIcon(_ icon: OuterframePresentationIcon) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.setIcon(icon).encode())
+        }
+    }
+
     // MARK: - Pasteboard
 
     func sendEditCommandValidationResponse(requestID: UUID, enabledCommands: OuterframeEditCommandSet) {
