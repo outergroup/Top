@@ -47,7 +47,7 @@ For Outer Loop-managed deployments, prefer a Unix socket. If `--port` is omitted
 
 ```bash
 "$BUILD_ROOT/Release/TopBackend" \
-  --label dev.outergroup.Top \
+  --label org.outershell.Top \
   --bundles-dir "$RUN_ROOT/bundles"
 ```
 
@@ -55,8 +55,8 @@ You can also pass an explicit socket:
 
 ```bash
 "$BUILD_ROOT/Release/TopBackend" \
-  --socket-path "$XDG_RUNTIME_DIR/dev.outergroup.Top" \
-  --label dev.outergroup.Top \
+  --socket-path "$XDG_RUNTIME_DIR/org.outershell.Top" \
+  --label org.outershell.Top \
   --bundles-dir "$RUN_ROOT/bundles"
 ```
 

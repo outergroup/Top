@@ -83,7 +83,7 @@ cat > "${MACOS_APP_ROOT}/Contents/Info.plist" <<'__TOP_INFO_PLIST__'
     <key>CFBundleExecutable</key>
     <string>TopBackend</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.outergroup.Top</string>
+    <string>org.outershell.Top</string>
     <key>CFBundleName</key>
     <string>Top</string>
     <key>CFBundlePackageType</key>

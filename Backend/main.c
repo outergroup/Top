@@ -5319,7 +5319,7 @@ static int create_tcp_listener(int requested_port, int *actual_port_out) {
 }
 
 static void default_socket_path(char *out, size_t out_size) {
-    const char *label = g_backend_label[0] ? g_backend_label : "dev.outergroup.Top";
+    const char *label = g_backend_label[0] ? g_backend_label : "org.outershell.Top";
 #ifdef __APPLE__
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
     if (runtime_dir && runtime_dir[0] != '\0') {
