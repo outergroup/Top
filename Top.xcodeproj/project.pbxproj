@@ -319,6 +319,10 @@
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				OTHER_CFLAGS = "-Werror=incompatible-pointer-types";
+				OTHER_LDFLAGS = (
+					"-framework",
+					CoreFoundation,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.outergroup.TopBackend;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -336,6 +340,10 @@
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				OTHER_CFLAGS = "-Werror=incompatible-pointer-types";
+				OTHER_LDFLAGS = (
+					"-framework",
+					CoreFoundation,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.outergroup.TopBackend;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

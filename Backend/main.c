@@ -35,6 +35,7 @@
 #ifdef __APPLE__
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
@@ -75,6 +76,57 @@ static const char *kBundleFilePathMacosArm = "bundles/TopContent.bundle.macos-ar
 static const char *kBundleFilePathMacosX86 = "bundles/TopContent.bundle.macos-x86.aar";
 static char g_bundle_file_path_macos_arm[4096] = "";
 static char g_bundle_file_path_macos_x86[4096] = "";
+
+#ifdef __APPLE__
+static bool cfurl_copy_file_system_path(CFURLRef url, char *out, size_t out_size) {
+    if (!url || !out || out_size == 0) {
+        return false;
+    }
+    Boolean ok = CFURLGetFileSystemRepresentation(url, true, (UInt8 *)out, out_size);
+    if (!ok) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+static void configure_bundle_resource_paths_from_main_bundle(void) {
+    CFBundleRef bundle = CFBundleGetMainBundle();
+    if (!bundle) {
+        return;
+    }
+
+    CFURLRef resources_url = CFBundleCopyResourcesDirectoryURL(bundle);
+    if (!resources_url) {
+        return;
+    }
+
+    CFURLRef bundles_url = CFURLCreateCopyAppendingPathComponent(kCFAllocatorDefault,
+                                                                 resources_url,
+                                                                 CFSTR("bundles"),
+                                                                 true);
+    CFRelease(resources_url);
+    if (!bundles_url) {
+        return;
+    }
+
+    char bundles_dir[PATH_MAX];
+    if (cfurl_copy_file_system_path(bundles_url, bundles_dir, sizeof(bundles_dir))) {
+        char arm_path[PATH_MAX];
+        char x86_path[PATH_MAX];
+        snprintf(arm_path, sizeof(arm_path), "%s/TopContent.bundle.macos-arm.aar", bundles_dir);
+        snprintf(x86_path, sizeof(x86_path), "%s/TopContent.bundle.macos-x86.aar", bundles_dir);
+        struct stat st;
+        if (stat(arm_path, &st) == 0 && S_ISREG(st.st_mode) &&
+            stat(x86_path, &st) == 0 && S_ISREG(st.st_mode)) {
+            snprintf(g_bundle_file_path_macos_arm, sizeof(g_bundle_file_path_macos_arm), "%s", arm_path);
+            snprintf(g_bundle_file_path_macos_x86, sizeof(g_bundle_file_path_macos_x86), "%s", x86_path);
+        }
+    }
+
+    CFRelease(bundles_url);
+}
+#endif
 
 typedef struct ProcessIdentity {
     int pid;
@@ -5402,6 +5454,9 @@ static int create_launchd_unix_listener(const char *socket_name, const char *soc
 
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
+#ifdef __APPLE__
+    configure_bundle_resource_paths_from_main_bundle();
+#endif
     struct sigaction shutdown_action;
     memset(&shutdown_action, 0, sizeof(shutdown_action));
     shutdown_action.sa_handler = handle_shutdown_signal;

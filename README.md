@@ -106,12 +106,15 @@ Then open `http://127.0.0.1:7351/` on your local machine. You can avoid all of t
 
 `TopBackend` serves the frontend from `TopContent.bundle.macos-arm.aar` and `TopContent.bundle.macos-x86.aar`. The `--bundles-dir` argument must point to the directory containing those `.aar` files, not to the built `Top.bundle` directory.
 
-To create a release payload for a Home Screen-style installer, build both Linux
-backend architectures into `build/linux-package/RemoteLinuxBinaries`, then run:
+To create an Outer Shell starter app release payload, build both Linux backend
+architectures into `build/linux-package/RemoteLinuxBinaries`, then run:
 
 ```bash
 ./Scripts/package_release.sh
 ```
 
-The archive is written to `build/release/Top.tar.gz`. Deployment-specific
-publishing should live outside this repository.
+The packaging script also builds the macOS `TopBackend` and writes an archive
+with `Top.app` for localhost macOS installs plus `RemoteLinuxBinaries`,
+top-level Linux content bundles, and the app icon to
+`build/release/Top.tar.gz`. Deployment-specific publishing should live outside
+this repository.
