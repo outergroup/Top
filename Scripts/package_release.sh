@@ -57,25 +57,21 @@ echo "==> Archiving TopContent bundles"
 STAGING_ROOT="$(mktemp -d)"
 trap 'rm -rf "${STAGING_ROOT}"' EXIT
 
-APP_ROOT="${STAGING_ROOT}/Top"
-MACOS_APP_ROOT="${APP_ROOT}/Top.app"
-mkdir -p \
-    "${MACOS_APP_ROOT}/Contents/MacOS" \
-    "${MACOS_APP_ROOT}/Contents/Resources/bundles" \
-    "${APP_ROOT}/RemoteLinuxBinaries/aarch64" \
-    "${APP_ROOT}/RemoteLinuxBinaries/x86_64" \
-    "${APP_ROOT}/bundles"
+OUTPUT_APP_ROOT="${OUTPUT_ROOT}/Top"
+rm -rf "${OUTPUT_APP_ROOT}"
+mkdir -p "${OUTPUT_APP_ROOT}"
 
-install -m 0755 "${MACOS_BUILD_ROOT}/${CONFIGURATION}/TopBackend" "${MACOS_APP_ROOT}/Contents/MacOS/TopBackend"
-install -m 0755 "${PACKAGE_ROOT}/RemoteLinuxBinaries/aarch64/TopBackend" "${APP_ROOT}/RemoteLinuxBinaries/aarch64/TopBackend"
-install -m 0755 "${PACKAGE_ROOT}/RemoteLinuxBinaries/x86_64/TopBackend" "${APP_ROOT}/RemoteLinuxBinaries/x86_64/TopBackend"
-install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${APP_ROOT}/bundles/TopContent.bundle.macos-arm.aar"
-install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${APP_ROOT}/bundles/TopContent.bundle.macos-x86.aar"
-install -m 0644 "${REPO_ROOT}/app-icon.png" "${APP_ROOT}/app-icon.png"
-install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${MACOS_APP_ROOT}/Contents/Resources/bundles/TopContent.bundle.macos-arm.aar"
-install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${MACOS_APP_ROOT}/Contents/Resources/bundles/TopContent.bundle.macos-x86.aar"
-install -m 0644 "${REPO_ROOT}/app-icon.png" "${MACOS_APP_ROOT}/Contents/Resources/app-icon.png"
-cat > "${MACOS_APP_ROOT}/Contents/Info.plist" <<'__TOP_INFO_PLIST__'
+install_shared_resources() {
+    local app_root="$1"
+    mkdir -p "${app_root}/bundles"
+    install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${app_root}/bundles/TopContent.bundle.macos-arm.aar"
+    install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${app_root}/bundles/TopContent.bundle.macos-x86.aar"
+    install -m 0644 "${REPO_ROOT}/app-icon.png" "${app_root}/app-icon.png"
+}
+
+write_info_plist() {
+    local app_bundle="$1"
+    cat > "${app_bundle}/Contents/Info.plist" <<'__TOP_INFO_PLIST__'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -97,10 +93,44 @@ cat > "${MACOS_APP_ROOT}/Contents/Info.plist" <<'__TOP_INFO_PLIST__'
 </dict>
 </plist>
 __TOP_INFO_PLIST__
+}
 
-if command -v /usr/bin/codesign >/dev/null 2>&1; then
-    /usr/bin/codesign --force --sign - --timestamp=none "${MACOS_APP_ROOT}" >/dev/null
-fi
+package_linux_variant() {
+    local arch="$1"
+    local output_name="$2"
+    local app_root="${STAGING_ROOT}/Top"
+    rm -rf "${app_root}"
+    mkdir -p "${app_root}/RemoteLinuxBinaries/${arch}"
+    install_shared_resources "${app_root}"
+    install -m 0755 "${PACKAGE_ROOT}/RemoteLinuxBinaries/${arch}/TopBackend" "${app_root}/RemoteLinuxBinaries/${arch}/TopBackend"
+    tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_APP_ROOT}/${output_name}.tar.gz" Top
+    echo "Packaged ${OUTPUT_APP_ROOT}/${output_name}.tar.gz"
+}
 
-tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_ROOT}/Top.tar.gz" Top
-echo "Packaged ${OUTPUT_ROOT}/Top.tar.gz"
+package_macos_variant() {
+    local arch="$1"
+    local output_name="$2"
+    local app_root="${STAGING_ROOT}/Top"
+    local macos_app_root="${app_root}/Top.app"
+    rm -rf "${app_root}"
+    mkdir -p \
+        "${macos_app_root}/Contents/MacOS" \
+        "${macos_app_root}/Contents/Resources/bundles"
+    install_shared_resources "${app_root}"
+    /usr/bin/lipo "${MACOS_BUILD_ROOT}/${CONFIGURATION}/TopBackend" -thin "${arch}" -output "${macos_app_root}/Contents/MacOS/TopBackend"
+    chmod 0755 "${macos_app_root}/Contents/MacOS/TopBackend"
+    install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-arm.aar"
+    install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-x86.aar"
+    install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/app-icon.png"
+    write_info_plist "${macos_app_root}"
+    if command -v /usr/bin/codesign >/dev/null 2>&1; then
+        /usr/bin/codesign --force --sign - --timestamp=none "${macos_app_root}" >/dev/null
+    fi
+    tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_APP_ROOT}/${output_name}.tar.gz" Top
+    echo "Packaged ${OUTPUT_APP_ROOT}/${output_name}.tar.gz"
+}
+
+package_linux_variant aarch64 linux-aarch64
+package_linux_variant x86_64 linux-x86_64
+package_macos_variant arm64 macos-arm64
+package_macos_variant x86_64 macos-x86_64
