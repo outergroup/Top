@@ -3683,7 +3683,11 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
             mouseMoved(to: point, modifierFlags: modifierFlags)
 
         case .mouseDown(let point, let modifierFlags, let clickCount):
-            mouseDown(at: point, modifierFlags: modifierFlags, clickCount: clickCount)
+            if modifierFlags.contains(.control) {
+                rightMouseDown(at: point, modifierFlags: modifierFlags, clickCount: clickCount)
+            } else {
+                mouseDown(at: point, modifierFlags: modifierFlags, clickCount: clickCount)
+            }
 
         case .mouseUp(let point, let modifierFlags):
             mouseUp(at: point, modifierFlags: modifierFlags)
