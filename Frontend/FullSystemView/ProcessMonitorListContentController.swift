@@ -1291,9 +1291,41 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
     // MARK: - Text Input Handling (independent of any particular control)
 
-    func insertText(_ text: String) {
+    func insertText(_ text: String,
+                    hasReplacementRange: Bool = false,
+                    replacementLocation: Int = 0,
+                    replacementLength: Int = 0) {
         if searchFieldInputController.isFocused {
+            if hasReplacementRange {
+                searchFieldInputController.replaceText(range: replacementRange(hasReplacementRange: hasReplacementRange,
+                                                                               location: replacementLocation,
+                                                                               length: replacementLength) ?? 0..<0,
+                                                       with: text)
+                return
+            }
             searchFieldInputController.insertText(text)
+        }
+    }
+
+    func setMarkedText(_ text: String,
+                       selectedLocation: Int,
+                       selectedLength: Int,
+                       hasReplacementRange: Bool,
+                       replacementLocation: Int,
+                       replacementLength: Int) {
+        if searchFieldInputController.isFocused {
+            searchFieldInputController.setMarkedText(text,
+                                                     selectedLocation: selectedLocation,
+                                                     selectedLength: selectedLength,
+                                                     replacementRange: replacementRange(hasReplacementRange: hasReplacementRange,
+                                                                                       location: replacementLocation,
+                                                                                       length: replacementLength))
+        }
+    }
+
+    func unmarkText() {
+        if searchFieldInputController.isFocused {
+            searchFieldInputController.unmarkText()
         }
     }
 
@@ -1307,6 +1339,13 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         guard fieldID == Self.searchFieldID else { return }
         focusSearchField()
         searchFieldInputController.setCursorPosition(position, modifySelection: modifySelection)
+    }
+
+    private func replacementRange(hasReplacementRange: Bool, location: Int, length: Int) -> Range<Int>? {
+        guard hasReplacementRange else { return nil }
+        let start = min(max(location, 0), searchFieldInputController.text.count)
+        let end = min(max(start + length, start), searchFieldInputController.text.count)
+        return start..<end
     }
 
     func textInputFocus(fieldID: UUID, hasFocus: Bool) {
@@ -3719,11 +3758,22 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .keyUp:
             break
 
-        case .textInput(let text, _, _, _):
-            insertText(text)
+        case .textInput(let text, let hasReplacementRange, let replacementLocation, let replacementLength):
+            insertText(text,
+                       hasReplacementRange: hasReplacementRange,
+                       replacementLocation: Int(replacementLocation),
+                       replacementLength: Int(replacementLength))
 
-        case .setMarkedText, .unmarkText:
-            break
+        case .setMarkedText(let text, let selectedLocation, let selectedLength, let hasReplacementRange, let replacementLocation, let replacementLength):
+            setMarkedText(text,
+                          selectedLocation: Int(selectedLocation),
+                          selectedLength: Int(selectedLength),
+                          hasReplacementRange: hasReplacementRange,
+                          replacementLocation: Int(replacementLocation),
+                          replacementLength: Int(replacementLength))
+
+        case .unmarkText:
+            unmarkText()
 
         case .systemAppearanceUpdate(let appearance):
             model.effectiveAppearance = appearance
