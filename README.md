@@ -7,6 +7,22 @@ It's built from two pieces:
 - `Top`: the macOS user interface in `Frontend/`.
 - `TopBackend`: the HTTP server in `Backend/main.c`.
 
+## Deploy Over SSH
+
+With a current Outer Shell installed on the target:
+
+```bash
+./app target "ssh -p 22 you@server"
+./app deploy
+```
+
+The target lives in the gitignored `target.env`. The command builds the
+universal frontend, detects the target architecture and libc, builds the one
+matching Linux backend, streams the payload over SSH, and installs it through
+Outer Shell. glibc builds use the manylinux2014 (glibc 2.17) baseline; musl
+builds use musllinux 1.2. Run `./app build-matrix` to build all four Linux
+release variants, or `./app help` for the other development commands.
+
 ## Build
 
 From this directory:
