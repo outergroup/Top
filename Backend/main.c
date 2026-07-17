@@ -32,6 +32,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "HTTPCache.h"
+
 #ifdef __APPLE__
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
@@ -4507,6 +4509,40 @@ static void queue_json_response(StreamClient *client, const char *json, size_t l
     queue_response(client, 200, "OK", "application/json; charset=utf-8", json, len, close_after);
 }
 
+static void queue_cached_header(StreamClient *client,
+                                int status,
+                                const char *content_type,
+                                size_t content_length,
+                                const char *etag,
+                                const char *last_modified) {
+    char header[1024];
+    size_t header_length = outer_http_cache_response_header(header, sizeof(header), status,
+                                                            content_type, content_length,
+                                                            etag, last_modified);
+    if (header_length > 0) queue_write_data(client, header, header_length);
+    client->close_after_write = true;
+    client->state = CONN_STATE_WRITING_RESPONSE;
+}
+
+static void queue_cached_memory_response(StreamClient *client,
+                                         const char *request,
+                                         size_t request_header_length,
+                                         const char *content_type,
+                                         const void *body,
+                                         size_t body_length,
+                                         bool send_body) {
+    time_t last_modified = outer_http_cache_server_start_time();
+    char etag[96], last_modified_text[64];
+    outer_http_cache_memory_etag(body, body_length, etag, sizeof(etag));
+    outer_http_cache_format_date(last_modified, last_modified_text, sizeof(last_modified_text));
+    if (outer_http_cache_not_modified(request, request_header_length, etag, &last_modified)) {
+        queue_cached_header(client, 304, content_type, 0, etag, last_modified_text);
+        return;
+    }
+    queue_cached_header(client, 200, content_type, body_length, etag, last_modified_text);
+    if (send_body && body_length > 0) queue_write_data(client, body, body_length);
+}
+
 static void write_outer_uint32_le(unsigned char *bytes, uint32_t value) {
     bytes[0] = (unsigned char)(value & 0xff);
     bytes[1] = (unsigned char)((value >> 8) & 0xff);
@@ -4525,7 +4561,11 @@ static void write_outer_uint64_le(unsigned char *bytes, uint64_t value) {
     bytes[7] = (unsigned char)((value >> 56) & 0xff);
 }
 
-static void queue_outer_descriptor(StreamClient *client, const char *query) {
+static void queue_outer_descriptor(StreamClient *client,
+                                   const char *query,
+                                   const char *request,
+                                   size_t request_header_length,
+                                   bool send_body) {
     char plugin_data[JSON_BUFFER_SIZE];
     size_t plugin_len = build_outer_plugin_payload(query, plugin_data, sizeof(plugin_data));
 
@@ -4553,12 +4593,17 @@ static void queue_outer_descriptor(StreamClient *client, const char *query) {
         memcpy(payload + data_offset, plugin_data, plugin_len);
     }
 
-    queue_response(client, 200, "OK", "application/vnd.outerframe",
-                   payload, total_len, true);
+    queue_cached_memory_response(client, request, request_header_length,
+                                 "application/vnd.outerframe", payload, total_len,
+                                 send_body);
     free(payload);
 }
 
-static void queue_bundle_file(StreamClient *client, const char *path) {
+static void queue_bundle_file(StreamClient *client,
+                              const char *path,
+                              const char *request,
+                              size_t request_header_length,
+                              bool send_body) {
     int file_fd = open(path, O_RDONLY);
     if (file_fd < 0) {
         char message[4096 + 64];
@@ -4574,8 +4619,26 @@ static void queue_bundle_file(StreamClient *client, const char *path) {
         return;
     }
 
+    if (st.st_size < 0 || !S_ISREG(st.st_mode)) {
+        close(file_fd);
+        queue_plain_text_response(client, 500, "invalid bundle\n", true);
+        return;
+    }
+    char etag[96], last_modified[64];
+    outer_http_cache_file_etag(&st, etag, sizeof(etag));
+    outer_http_cache_format_date(st.st_mtime, last_modified, sizeof(last_modified));
+    if (outer_http_cache_not_modified(request, request_header_length, etag, &st.st_mtime)) {
+        close(file_fd);
+        queue_cached_header(client, 304, "application/octet-stream", 0, etag, last_modified);
+        return;
+    }
     size_t file_size = (size_t)st.st_size;
-    unsigned char *file_data = malloc(file_size);
+    if (!send_body) {
+        close(file_fd);
+        queue_cached_header(client, 200, "application/octet-stream", file_size, etag, last_modified);
+        return;
+    }
+    unsigned char *file_data = malloc(file_size > 0 ? file_size : 1);
     if (!file_data) {
         close(file_fd);
         queue_plain_text_response(client, 500, "out of memory\n", true);
@@ -4598,8 +4661,9 @@ static void queue_bundle_file(StreamClient *client, const char *path) {
         return;
     }
 
-    queue_response(client, 200, "OK", "application/octet-stream",
-                   file_data, file_size, true);
+    queue_cached_header(client, 200, "application/octet-stream",
+                        file_size, etag, last_modified);
+    if (file_size > 0) queue_write_data(client, file_data, file_size);
     free(file_data);
 }
 
@@ -4978,12 +5042,23 @@ static void process_client_request(StreamClient *client) {
         queue_plain_text_response(client, 400, "bad request\n", true);
         return;
     }
-    *line_end = '\0';
+    char request_line[2048];
+    size_t request_line_length = (size_t)(line_end - request);
+    if (request_line_length >= sizeof(request_line)) {
+        queue_plain_text_response(client, 400, "bad request\n", true);
+        return;
+    }
+    memcpy(request_line, request, request_line_length);
+    request_line[request_line_length] = '\0';
+    char *headers_end = memmem(request, client->read_buffer_used, "\r\n\r\n", 4);
+    size_t request_header_length = headers_end
+        ? (size_t)(headers_end + 4 - request)
+        : client->read_buffer_used;
 
     char method[16];
     char target[1024];
     char version[16];
-    if (sscanf(request, "%15s %1023s %15s", method, target, version) != 3) {
+    if (sscanf(request_line, "%15s %1023s %15s", method, target, version) != 3) {
         queue_plain_text_response(client, 400, "bad request\n", true);
         return;
     }
@@ -5002,7 +5077,7 @@ static void process_client_request(StreamClient *client) {
 
     if (strcmp(target, "/") == 0 || strcmp(target, "/index") == 0 ||
         strcmp(target, "/outer/process-monitor.outer") == 0) {
-        queue_outer_descriptor(client, query);
+        queue_outer_descriptor(client, query, request, request_header_length, !head_only);
         return;
     }
     if (strcmp(target, kBundleUrlPath) == 0) {
@@ -5011,12 +5086,12 @@ static void process_client_request(StreamClient *client) {
     }
     if (strcmp(target, kBundleUrlPathMacosArm) == 0) {
         const char *path = g_bundle_file_path_macos_arm[0] ? g_bundle_file_path_macos_arm : kBundleFilePathMacosArm;
-        queue_bundle_file(client, path);
+        queue_bundle_file(client, path, request, request_header_length, !head_only);
         return;
     }
     if (strcmp(target, kBundleUrlPathMacosX86) == 0) {
         const char *path = g_bundle_file_path_macos_x86[0] ? g_bundle_file_path_macos_x86 : kBundleFilePathMacosX86;
-        queue_bundle_file(client, path);
+        queue_bundle_file(client, path, request, request_header_length, !head_only);
         return;
     }
     static const char process_api_prefix[] = "/api/processes/";
