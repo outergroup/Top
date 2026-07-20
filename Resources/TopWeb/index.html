@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1e1e1e" media="(prefers-color-scheme: dark)">
+  <title>Top</title>
+  <link rel="stylesheet" href="/web/top.css">
+</head>
+<body>
+  <main class="top-app">
+    <section class="process-section" aria-label="Processes">
+      <div class="command-bar">
+        <div class="command-actions">
+          <button id="stop-button" class="command-button" disabled title="Stop selected process">
+            <span class="button-symbol stop-symbol" aria-hidden="true">×</span><span>Stop</span>
+          </button>
+          <button id="inspect-button" class="command-button" disabled title="Inspect selected process">
+            <span class="button-symbol info-symbol" aria-hidden="true">i</span><span>Inspect</span>
+          </button>
+        </div>
+        <label class="search-field">
+          <span class="search-symbol" aria-hidden="true"></span>
+          <input id="search" type="search" inputmode="search" autocomplete="off" spellcheck="false" placeholder="Search" aria-label="Search processes">
+        </label>
+      </div>
+
+      <div class="table-header process-grid" role="row">
+        <button data-sort="command" role="columnheader">Command <span class="sort-mark"></span></button>
+        <button data-sort="user" role="columnheader">User <span class="sort-mark"></span></button>
+        <button data-sort="cpu" class="number" role="columnheader"><span>% CPU</span><span class="sort-mark">⌄</span></button>
+        <button data-sort="cputime" class="number" role="columnheader">Total CPU Time <span class="sort-mark"></span></button>
+        <button data-sort="memory" class="number" role="columnheader">Memory <span class="sort-mark"></span></button>
+        <button data-sort="pid" class="number" role="columnheader">PID <span class="sort-mark"></span></button>
+      </div>
+
+      <div id="process-viewport" class="process-viewport" role="table" aria-rowcount="0" tabindex="0">
+        <div id="row-spacer" class="row-spacer">
+          <div id="row-stripes" class="row-stripes" aria-hidden="true"></div>
+          <div id="rows" class="rows" role="rowgroup"></div>
+        </div>
+        <div id="empty-state" class="empty-state" hidden>
+          <strong>No matching processes</strong><span>Try a different search.</span>
+        </div>
+      </div>
+
+      <div id="connection" class="connection-status" role="status">
+        <span class="connection-dot"></span><span id="connection-label">Connecting…</span>
+      </div>
+    </section>
+
+    <section class="system-metrics" aria-label="System metrics">
+      <div class="cpu-stats">
+        <h2>CPU Usage</h2>
+        <div class="stat-row"><span>Idle:</span><span id="cpu-idle" class="sprite-value stat-value">—</span></div>
+        <div class="stat-row user-stat"><span>User:</span><span id="cpu-user" class="sprite-value stat-value">—</span></div>
+        <div class="stat-row system-stat"><span>System:</span><span id="cpu-system" class="sprite-value stat-value">—</span></div>
+      </div>
+
+      <div class="history-section">
+        <div id="cpu-chart" class="cpu-chart" aria-label="CPU usage over the last three minutes">
+          <div class="chart-grid" aria-hidden="true">
+            <i class="horizontal one-quarter"></i><i class="horizontal one-half"></i>
+            <i class="vertical v1"></i><i class="vertical v2"></i><i class="vertical v3"></i><i class="vertical v4"></i><i class="vertical v5"></i>
+          </div>
+          <div id="chart-bars" class="chart-bars" aria-hidden="true"></div>
+          <div id="selection-dim-left" class="selection-dim"></div>
+          <div id="selection-dim-right" class="selection-dim"></div>
+          <div id="selection-range" class="selection-range" aria-hidden="true">
+            <i class="selection-handle left"></i><i class="selection-handle right"></i>
+          </div>
+          <div id="chart-hover-line" class="chart-hover-line" hidden></div>
+          <div id="chart-tooltip" class="chart-tooltip" hidden></div>
+          <div id="selection-tooltip" class="selection-tooltip" hidden></div>
+          <div class="chart-y-label top"><span id="chart-max">1 core</span></div>
+          <div class="chart-y-label middle"><span id="chart-half">½ core</span></div>
+          <button class="chart-hit-target" id="chart-hit-target" aria-label="Drag to choose the process averaging interval"></button>
+        </div>
+        <div id="chart-ticks" class="chart-ticks" aria-label="Choose a trailing time window">
+          <button data-ago="180">-3:00</button><button data-ago="150">-2:30</button>
+          <button data-ago="120">-2:00</button><button data-ago="90">-1:30</button>
+          <button data-ago="60">-1:00</button><button data-ago="30">-0:30</button>
+          <button data-ago="0">Now</button>
+        </div>
+      </div>
+
+      <div class="system-counts">
+        <div><span id="thread-count" class="sprite-value count-value">—</span><span>Visible Threads</span></div>
+        <div><span id="process-count" class="sprite-value count-value">—</span><span>Processes</span></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="drawer-scrim" class="drawer-scrim" hidden></div>
+  <aside id="detail-drawer" class="detail-drawer" aria-hidden="true" aria-label="Process inspector">
+    <div class="drawer-header">
+      <div><p class="eyebrow">Process inspector</p><h2 id="detail-title">Process</h2></div>
+      <button id="close-drawer" class="icon-button" aria-label="Close inspector">×</button>
+    </div>
+    <div id="detail-body" class="detail-body"></div>
+  </aside>
+
+  <dialog id="stop-dialog">
+    <form method="dialog">
+      <h2>Stop process?</h2>
+      <p id="stop-message"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="dialog-button">Cancel</button>
+        <button value="force" class="dialog-button danger-secondary">Force Quit</button>
+        <button value="quit" class="dialog-button danger-button">Quit</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/web/top.js" defer></script>
+</body>
+</html>

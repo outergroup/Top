@@ -224,6 +224,7 @@ static size_t outer_http_cache_response_header(char *out,
                           "HTTP/1.1 304 Not Modified\r\n"
                           "Connection: close\r\n"
                           "Cache-Control: public, max-age=0, must-revalidate\r\n"
+                          "Vary: Outerframe-Accept\r\n"
                           "ETag: %s\r\n"
                           "Last-Modified: %s\r\n"
                           "\r\n",
@@ -235,6 +236,7 @@ static size_t outer_http_cache_response_header(char *out,
                           "Content-Length: %zu\r\n"
                           "Connection: close\r\n"
                           "Cache-Control: public, max-age=0, must-revalidate\r\n"
+                          "Vary: Outerframe-Accept\r\n"
                           "ETag: %s\r\n"
                           "Last-Modified: %s\r\n"
                           "\r\n",
@@ -250,4 +252,3 @@ static time_t outer_http_cache_server_start_time(void) {
 }
 
 #endif
-

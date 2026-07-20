@@ -78,6 +78,7 @@ static const char *kBundleFilePathMacosArm = "bundles/TopContent.bundle.macos-ar
 static const char *kBundleFilePathMacosX86 = "bundles/TopContent.bundle.macos-x86.aar";
 static char g_bundle_file_path_macos_arm[4096] = "";
 static char g_bundle_file_path_macos_x86[4096] = "";
+static char g_web_root[4096] = "Resources/TopWeb";
 
 #ifdef __APPLE__
 static bool cfurl_copy_file_system_path(CFURLRef url, char *out, size_t out_size) {
@@ -107,8 +108,13 @@ static void configure_bundle_resource_paths_from_main_bundle(void) {
                                                                  resources_url,
                                                                  CFSTR("bundles"),
                                                                  true);
+    CFURLRef web_url = CFURLCreateCopyAppendingPathComponent(kCFAllocatorDefault,
+                                                             resources_url,
+                                                             CFSTR("web"),
+                                                             true);
     CFRelease(resources_url);
     if (!bundles_url) {
+        if (web_url) CFRelease(web_url);
         return;
     }
 
@@ -127,6 +133,16 @@ static void configure_bundle_resource_paths_from_main_bundle(void) {
     }
 
     CFRelease(bundles_url);
+    if (web_url) {
+        char web_dir[PATH_MAX];
+        if (cfurl_copy_file_system_path(web_url, web_dir, sizeof(web_dir))) {
+            struct stat st;
+            if (stat(web_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+                snprintf(g_web_root, sizeof(g_web_root), "%s", web_dir);
+            }
+        }
+        CFRelease(web_url);
+    }
 }
 #endif
 
@@ -4482,6 +4498,7 @@ static void queue_response(StreamClient *client, int status, const char *status_
                      "Content-Length: %zu\r\n"
                      "Connection: %s\r\n"
                      "Cache-Control: no-store\r\n"
+                     "Vary: Outerframe-Accept\r\n"
                      "\r\n",
                      status, status_text, ctype, body_len,
                      close_after ? "close" : "keep-alive");
@@ -4507,6 +4524,39 @@ static void queue_plain_text_response(StreamClient *client, int status, const ch
 
 static void queue_json_response(StreamClient *client, const char *json, size_t len, bool close_after) {
     queue_response(client, 200, "OK", "application/json; charset=utf-8", json, len, close_after);
+}
+
+static void queue_cached_memory_response(StreamClient *client,
+                                         const char *request,
+                                         size_t request_header_length,
+                                         const char *content_type,
+                                         const void *body,
+                                         size_t body_length,
+                                         bool send_body);
+
+static bool request_accepts_outerframe(const char *request, size_t request_header_length) {
+    const char *value = NULL;
+    size_t value_length = 0;
+    if (!outer_http_cache_request_header(request, request_header_length,
+                                         "Outerframe-Accept", &value, &value_length)) {
+        return false;
+    }
+
+    static const char outerframe_type[] = "application/vnd.outerframe";
+    const char *cursor = value;
+    const char *end = value + value_length;
+    while (cursor < end) {
+        while (cursor < end && (*cursor == ' ' || *cursor == '\t' || *cursor == ',')) cursor++;
+        const char *token_end = cursor;
+        while (token_end < end && *token_end != ',') token_end++;
+        while (token_end > cursor && (token_end[-1] == ' ' || token_end[-1] == '\t')) token_end--;
+        if ((size_t)(token_end - cursor) == sizeof(outerframe_type) - 1 &&
+            strncasecmp(cursor, outerframe_type, sizeof(outerframe_type) - 1) == 0) {
+            return true;
+        }
+        cursor = token_end < end ? token_end + 1 : end;
+    }
+    return false;
 }
 
 static void queue_cached_header(StreamClient *client,
@@ -4599,15 +4649,17 @@ static void queue_outer_descriptor(StreamClient *client,
     free(payload);
 }
 
-static void queue_bundle_file(StreamClient *client,
-                              const char *path,
-                              const char *request,
-                              size_t request_header_length,
-                              bool send_body) {
+static void queue_resource_file(StreamClient *client,
+                                const char *path,
+                                const char *content_type,
+                                const char *resource_name,
+                                const char *request,
+                                size_t request_header_length,
+                                bool send_body) {
     int file_fd = open(path, O_RDONLY);
     if (file_fd < 0) {
         char message[4096 + 64];
-        snprintf(message, sizeof(message), "bundle not found at %s\n", path);
+        snprintf(message, sizeof(message), "%s not found at %s\n", resource_name, path);
         queue_plain_text_response(client, 404, message, true);
         return;
     }
@@ -4615,13 +4667,13 @@ static void queue_bundle_file(StreamClient *client,
     struct stat st;
     if (fstat(file_fd, &st) < 0) {
         close(file_fd);
-        queue_plain_text_response(client, 500, "failed to stat bundle\n", true);
+        queue_plain_text_response(client, 500, "failed to stat resource\n", true);
         return;
     }
 
     if (st.st_size < 0 || !S_ISREG(st.st_mode)) {
         close(file_fd);
-        queue_plain_text_response(client, 500, "invalid bundle\n", true);
+        queue_plain_text_response(client, 500, "invalid resource\n", true);
         return;
     }
     char etag[96], last_modified[64];
@@ -4629,13 +4681,13 @@ static void queue_bundle_file(StreamClient *client,
     outer_http_cache_format_date(st.st_mtime, last_modified, sizeof(last_modified));
     if (outer_http_cache_not_modified(request, request_header_length, etag, &st.st_mtime)) {
         close(file_fd);
-        queue_cached_header(client, 304, "application/octet-stream", 0, etag, last_modified);
+        queue_cached_header(client, 304, content_type, 0, etag, last_modified);
         return;
     }
     size_t file_size = (size_t)st.st_size;
     if (!send_body) {
         close(file_fd);
-        queue_cached_header(client, 200, "application/octet-stream", file_size, etag, last_modified);
+        queue_cached_header(client, 200, content_type, file_size, etag, last_modified);
         return;
     }
     unsigned char *file_data = malloc(file_size > 0 ? file_size : 1);
@@ -4657,14 +4709,35 @@ static void queue_bundle_file(StreamClient *client,
 
     if (total_read != file_size) {
         free(file_data);
-        queue_plain_text_response(client, 500, "failed to read bundle\n", true);
+        queue_plain_text_response(client, 500, "failed to read resource\n", true);
         return;
     }
 
-    queue_cached_header(client, 200, "application/octet-stream",
+    queue_cached_header(client, 200, content_type,
                         file_size, etag, last_modified);
     if (file_size > 0) queue_write_data(client, file_data, file_size);
     free(file_data);
+}
+
+static void queue_web_file(StreamClient *client,
+                           const char *file_name,
+                           const char *content_type,
+                           const char *request,
+                           size_t request_header_length,
+                           bool send_body) {
+    char path[PATH_MAX];
+    int path_length = snprintf(path, sizeof(path), "%s/%s", g_web_root, file_name);
+    if (path_length < 0 || (size_t)path_length >= sizeof(path)) {
+        queue_plain_text_response(client, 500, "web resource path is too long\n", true);
+        return;
+    }
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        queue_plain_text_response(client, 404, "web resource not found\n", true);
+        return;
+    }
+    queue_resource_file(client, path, content_type, "web resource",
+                        request, request_header_length, send_body);
 }
 
 static void queue_history_response(StreamClient *client, const char *query) {
@@ -5075,8 +5148,26 @@ static void process_client_request(StreamClient *client) {
         query++;
     }
 
-    if (strcmp(target, "/") == 0 || strcmp(target, "/index") == 0 ||
-        strcmp(target, "/outer/process-monitor.outer") == 0) {
+    if (strcmp(target, "/") == 0 || strcmp(target, "/index") == 0) {
+        if (!request_accepts_outerframe(request, request_header_length)) {
+            queue_web_file(client, "index.html", "text/html; charset=utf-8",
+                           request, request_header_length, !head_only);
+            return;
+        }
+        queue_outer_descriptor(client, query, request, request_header_length, !head_only);
+        return;
+    }
+    if (strcmp(target, "/web/top.css") == 0) {
+        queue_web_file(client, "top.css", "text/css; charset=utf-8",
+                       request, request_header_length, !head_only);
+        return;
+    }
+    if (strcmp(target, "/web/top.js") == 0) {
+        queue_web_file(client, "top.js", "text/javascript; charset=utf-8",
+                       request, request_header_length, !head_only);
+        return;
+    }
+    if (strcmp(target, "/outer/process-monitor.outer") == 0) {
         queue_outer_descriptor(client, query, request, request_header_length, !head_only);
         return;
     }
@@ -5086,12 +5177,14 @@ static void process_client_request(StreamClient *client) {
     }
     if (strcmp(target, kBundleUrlPathMacosArm) == 0) {
         const char *path = g_bundle_file_path_macos_arm[0] ? g_bundle_file_path_macos_arm : kBundleFilePathMacosArm;
-        queue_bundle_file(client, path, request, request_header_length, !head_only);
+        queue_resource_file(client, path, "application/octet-stream", "bundle",
+                            request, request_header_length, !head_only);
         return;
     }
     if (strcmp(target, kBundleUrlPathMacosX86) == 0) {
         const char *path = g_bundle_file_path_macos_x86[0] ? g_bundle_file_path_macos_x86 : kBundleFilePathMacosX86;
-        queue_bundle_file(client, path, request, request_header_length, !head_only);
+        queue_resource_file(client, path, "application/octet-stream", "bundle",
+                            request, request_header_length, !head_only);
         return;
     }
     static const char process_api_prefix[] = "/api/processes/";
@@ -5347,7 +5440,7 @@ static bool parse_port_argument(const char *value, int *port_out) {
 
 static void print_usage(const char *program_name) {
     fprintf(stderr,
-            "Usage: %s [--port PORT | --socket-path PATH] [--launchd-socket-name NAME] [--label LABEL] [--pid-mode ID] [--bundles-dir DIR] [--icon-file PATH]\n",
+            "Usage: %s [--port PORT | --socket-path PATH] [--launchd-socket-name NAME] [--label LABEL] [--pid-mode ID] [--bundles-dir DIR] [--web-root DIR] [--icon-file PATH]\n",
             program_name && program_name[0] != '\0' ? program_name : "TopBackend");
 }
 
@@ -5555,6 +5648,14 @@ int main(int argc, char *argv[]) {
                      "%s/TopContent.bundle.macos-arm.aar", argv[i + 1]);
             snprintf(g_bundle_file_path_macos_x86, sizeof(g_bundle_file_path_macos_x86),
                      "%s/TopContent.bundle.macos-x86.aar", argv[i + 1]);
+            snprintf(g_web_root, sizeof(g_web_root), "%s/../web", argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "--web-root") == 0 && i + 1 < argc) {
+            if (strlen(argv[i + 1]) >= sizeof(g_web_root)) {
+                fprintf(stderr, "--web-root path is too long.\n");
+                return 2;
+            }
+            snprintf(g_web_root, sizeof(g_web_root), "%s", argv[i + 1]);
             i++;
         } else if (strcmp(argv[i], "--icon-file") == 0 && i + 1 < argc) {
             if (strlen(argv[i + 1]) >= PATH_MAX) {

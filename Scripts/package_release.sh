@@ -24,6 +24,9 @@ require_file "${PACKAGE_ROOT}/RemoteLinuxBinaries/x86_64/TopBackend"
 require_file "${PACKAGE_ROOT}/RemoteLinuxBinariesMusl/aarch64/TopBackend"
 require_file "${PACKAGE_ROOT}/RemoteLinuxBinariesMusl/x86_64/TopBackend"
 require_file "${REPO_ROOT}/app-icon.png"
+require_file "${REPO_ROOT}/Resources/TopWeb/index.html"
+require_file "${REPO_ROOT}/Resources/TopWeb/top.css"
+require_file "${REPO_ROOT}/Resources/TopWeb/top.js"
 
 mkdir -p "${OUTPUT_ROOT}" "${PACKAGE_ROOT}/bundles"
 
@@ -86,10 +89,13 @@ mkdir -p "${OUTPUT_APP_ROOT}"
 
 install_shared_resources() {
     local app_root="$1"
-    mkdir -p "${app_root}/bundles"
+    mkdir -p "${app_root}/bundles" "${app_root}/web"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${app_root}/bundles/TopContent.bundle.macos-arm.aar"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${app_root}/bundles/TopContent.bundle.macos-x86.aar"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${app_root}/app-icon.png"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/index.html" "${app_root}/web/index.html"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${app_root}/web/top.css"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.js" "${app_root}/web/top.js"
 }
 
 write_info_plist() {
@@ -141,13 +147,17 @@ package_macos_variant() {
     rm -rf "${app_root}"
     mkdir -p \
         "${macos_app_root}/Contents/MacOS" \
-        "${macos_app_root}/Contents/Resources/bundles"
+        "${macos_app_root}/Contents/Resources/bundles" \
+        "${macos_app_root}/Contents/Resources/web"
     install_shared_resources "${app_root}"
     /usr/bin/lipo "${MACOS_BUILD_ROOT}/${CONFIGURATION}/TopBackend" -thin "${arch}" -output "${macos_app_root}/Contents/MacOS/TopBackend"
     chmod 0755 "${macos_app_root}/Contents/MacOS/TopBackend"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-arm.aar"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-x86.aar"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/app-icon.png"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/index.html" "${macos_app_root}/Contents/Resources/web/index.html"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${macos_app_root}/Contents/Resources/web/top.css"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.js" "${macos_app_root}/Contents/Resources/web/top.js"
     write_info_plist "${macos_app_root}"
     sign_macos_app "${macos_app_root}"
     tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_APP_ROOT}/${output_name}.tar.gz" Top
