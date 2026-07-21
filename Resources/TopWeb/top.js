@@ -2,6 +2,7 @@
   "use strict";
 
   const ROW_HEIGHT = 28;
+  const TABLE_HEADER_HEIGHT = 28;
   const OVERSCAN_ROWS = 5;
   const CHART_DURATION = 180;
   const MAX_CHART_BARS = 180;
@@ -12,7 +13,8 @@
 
   const elements = {
     connection: $("#connection"), connectionLabel: $("#connection-label"),
-    viewport: $("#process-viewport"), spacer: $("#row-spacer"), rowStripes: $("#row-stripes"),
+    viewport: $("#process-viewport"),
+    spacer: $("#row-spacer"), rowStripes: $("#row-stripes"),
     rows: $("#rows"), empty: $("#empty-state"),
     search: $("#search"), stop: $("#stop-button"), inspect: $("#inspect-button"),
     cpuIdle: $("#cpu-idle"), cpuUser: $("#cpu-user"), cpuSystem: $("#cpu-system"),
@@ -29,6 +31,7 @@
   const state = {
     clientId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
     total: 0, sort: "cpu", ascending: false, search: "", selectedPID: null, selectedName: "",
+    pendingSelectionIndex: null,
     selection: { mode: "trailing", duration: 60 }, historical: false,
     snapshotIndex: 0, requestedStart: -1, requestedEnd: -1,
     rowViews: new Map(), streamController: null, viewportController: null, historyController: null, detailController: null,
@@ -41,29 +44,39 @@
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
 
-  function makeAtlas(tokens, logicalWidth, normalColor = cssColor("--text")) {
+  const numericFont = '400 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
+
+  function makeAtlas(tokens, widthMode, normalColor = cssColor("--text")) {
     const logicalHeight = 18;
     const horizontalPadding = 2;
-    const cellWidth = logicalWidth + horizontalPadding * 2;
     const scale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
+    const measuringCanvas = document.createElement("canvas");
+    const measuringContext = measuringCanvas.getContext("2d");
+    measuringContext.font = numericFont;
+    const measuredWidths = tokens.map(token => Math.ceil(measuringContext.measureText(token).width));
+    const tabularWidth = Math.max(...measuredWidths);
+    const logicalWidths = measuredWidths.map(width => widthMode === "tabular" ? tabularWidth : width);
+    const cellWidths = logicalWidths.map(width => width + horizontalPadding * 2);
+    const offsets = [];
+    let sheetWidth = 0;
+    cellWidths.forEach(width => { offsets.push(sheetWidth); sheetWidth += width; });
     const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(tokens.length * cellWidth * scale);
+    canvas.width = Math.ceil(sheetWidth * scale);
     canvas.height = Math.ceil(logicalHeight * 2 * scale);
     const context = canvas.getContext("2d", { alpha: true });
     context.scale(scale, scale);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '13px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+    context.font = numericFont;
     const colors = [normalColor, "#ffffff"];
     colors.forEach((color, row) => {
       context.fillStyle = color;
       tokens.forEach((token, column) => {
-        context.fillText(token, column * cellWidth + cellWidth / 2, row * logicalHeight + logicalHeight / 2 + .25);
+        context.fillText(token, offsets[column] + cellWidths[column] / 2, row * logicalHeight + logicalHeight / 2 + .25);
       });
     });
     return {
-      tokens, logicalWidth, logicalHeight, cellWidth, horizontalPadding,
-      sheetWidth: tokens.length * cellWidth,
+      tokens, logicalWidths, logicalHeight, cellWidths, offsets, horizontalPadding, sheetWidth,
       sheetHeight: logicalHeight * colors.length, url: `url(${JSON.stringify(canvas.toDataURL("image/png"))})`
     };
   }
@@ -73,17 +86,23 @@
     const digitTokens = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
     const punctuationTokens = [".", ":", "%", "-", "–", "/"];
     atlases = {
-      digits: makeAtlas(digitTokens, 8),
-      punctuation: makeAtlas(punctuationTokens, 7),
-      units: makeAtlas(["KB", "MB", "GB"], 20),
-      placeholder: makeAtlas(["—"], 10),
-      userDigits: makeAtlas(digitTokens, 8, cssColor("--user")),
-      userPunctuation: makeAtlas(punctuationTokens, 7, cssColor("--user")),
-      userPlaceholder: makeAtlas(["—"], 10, cssColor("--user")),
-      systemDigits: makeAtlas(digitTokens, 8, cssColor("--system")),
-      systemPunctuation: makeAtlas(punctuationTokens, 7, cssColor("--system")),
-      systemPlaceholder: makeAtlas(["—"], 10, cssColor("--system"))
+      digits: makeAtlas(digitTokens, "tabular"),
+      punctuation: makeAtlas(punctuationTokens, "natural"),
+      units: makeAtlas(["KB", "MB", "GB"], "natural"),
+      placeholder: makeAtlas(["—"], "natural"),
+      userDigits: makeAtlas(digitTokens, "tabular", cssColor("--user")),
+      userPunctuation: makeAtlas(punctuationTokens, "natural", cssColor("--user")),
+      userPlaceholder: makeAtlas(["—"], "natural", cssColor("--user")),
+      systemDigits: makeAtlas(digitTokens, "tabular", cssColor("--system")),
+      systemPunctuation: makeAtlas(punctuationTokens, "natural", cssColor("--system")),
+      systemPlaceholder: makeAtlas(["—"], "natural", cssColor("--system"))
     };
+    const pidDigitCount = 6;
+    const cellHorizontalInsets = 16;
+    document.documentElement.style.setProperty(
+      "--pid-column-min-width",
+      `${atlases.digits.logicalWidths[0] * pidDigitCount + cellHorizontalInsets}px`
+    );
     state.atlasRevision += 1;
   }
 
@@ -146,15 +165,15 @@
         const slot = this.slots[index];
         if (!token) {
           slot.className = "sprite-glyph blank";
-          slot.style.width = `${atlases.digits.logicalWidth}px`;
+          slot.style.width = `${atlases.digits.logicalWidths[0]}px`;
           continue;
         }
         const [atlas, atlasIndex, extraClass] = atlasToken(token, this.palette);
         slot.className = `sprite-glyph${extraClass}`;
-        slot.style.width = `${atlas.logicalWidth}px`;
+        slot.style.width = `${atlas.logicalWidths[atlasIndex]}px`;
         slot.style.backgroundImage = atlas.url;
         slot.style.backgroundSize = `${atlas.sheetWidth}px ${atlas.sheetHeight}px`;
-        slot.style.backgroundPosition = `${-(atlasIndex * atlas.cellWidth + atlas.horizontalPadding)}px ${-row * atlas.logicalHeight}px`;
+        slot.style.backgroundPosition = `${-(atlas.offsets[atlasIndex] + atlas.horizontalPadding)}px ${-row * atlas.logicalHeight}px`;
       }
     }
 
@@ -205,6 +224,7 @@
       this.element.dataset.name = process.command || "";
       this.element.setAttribute("aria-rowindex", String(index + 1));
       this.element.classList.toggle("selected", selected);
+      this.element.setAttribute("aria-selected", String(selected));
       this.element.classList.toggle("kernel-row", process.kernel);
       if (this.command !== process.command) {
         this.command = process.command; this.commandCell.textContent = process.command || `PID ${process.pid}`;
@@ -275,7 +295,7 @@
   }
 
   function visibleRange() {
-    const visibleCount = Math.max(1, Math.ceil(elements.viewport.clientHeight / ROW_HEIGHT));
+    const visibleCount = Math.max(1, Math.ceil(processRowsViewportHeight() / ROW_HEIGHT));
     const firstVisible = Math.max(0, Math.floor(elements.viewport.scrollTop / ROW_HEIGHT));
     const start = Math.max(0, firstVisible - OVERSCAN_ROWS);
     const upperLimit = state.total || Number.MAX_SAFE_INTEGER;
@@ -411,10 +431,14 @@
     }
 
     state.total = frame.total;
+    if (state.pendingSelectionIndex !== null) {
+      state.pendingSelectionIndex = frame.total ? Math.min(state.pendingSelectionIndex, frame.total - 1) : null;
+    }
     elements.viewport.setAttribute("aria-rowcount", String(frame.total));
-    elements.spacer.style.height = `${Math.max(frame.total * ROW_HEIGHT, elements.viewport.clientHeight)}px`;
+    elements.spacer.style.height = `${Math.max(frame.total * ROW_HEIGHT, processRowsViewportHeight())}px`;
     elements.rowStripes.style.height = `${frame.total * ROW_HEIGHT}px`;
     elements.empty.hidden = frame.total !== 0;
+    resolvePendingSelection();
   }
 
   function applyLiveFrame(frame) {
@@ -756,7 +780,8 @@
   }
 
   function selectProcess(pid, name) {
-    const previous = state.selectedPID; state.selectedPID = pid; state.selectedName = name;
+    const previous = state.selectedPID;
+    state.pendingSelectionIndex = null; state.selectedPID = pid; state.selectedName = name;
     elements.stop.disabled = false; elements.inspect.disabled = false;
     if (previous !== null) state.rowViews.get(previous)?.update(state.rowViews.get(previous).process, state.rowViews.get(previous).index);
     state.rowViews.get(pid)?.update(state.rowViews.get(pid).process, state.rowViews.get(pid).index);
@@ -764,11 +789,65 @@
 
   function clearProcessSelection() {
     const previous = state.selectedPID;
+    state.pendingSelectionIndex = null;
     if (previous === null) return;
     state.selectedPID = null; state.selectedName = "";
     elements.stop.disabled = true; elements.inspect.disabled = true;
     const previousView = state.rowViews.get(previous);
     previousView?.update(previousView.process, previousView.index);
+  }
+
+  function loadedRowAt(index) {
+    for (const view of state.rowViews.values()) {
+      if (!view.transient && view.index === index) return view;
+    }
+    return null;
+  }
+
+  function processRowsViewportHeight() {
+    return Math.max(1, elements.viewport.clientHeight - TABLE_HEADER_HEIGHT);
+  }
+
+  function keepRowVisible(index) {
+    const rowTop = index * ROW_HEIGHT;
+    const rowBottom = rowTop + ROW_HEIGHT;
+    const viewportTop = elements.viewport.scrollTop;
+    const viewportHeight = processRowsViewportHeight();
+    const viewportBottom = viewportTop + viewportHeight;
+    if (rowTop < viewportTop) elements.viewport.scrollTop = rowTop;
+    else if (rowBottom > viewportBottom) elements.viewport.scrollTop = Math.max(0, rowBottom - viewportHeight);
+  }
+
+  function resolvePendingSelection() {
+    if (state.pendingSelectionIndex === null) return false;
+    const view = loadedRowAt(state.pendingSelectionIndex);
+    if (!view) return false;
+    selectProcess(view.pid, view.process.command || "");
+    return true;
+  }
+
+  function moveProcessSelection(direction) {
+    if (!state.total) return;
+    let currentIndex = state.pendingSelectionIndex;
+    if (currentIndex === null && state.selectedPID !== null) {
+      currentIndex = state.rowViews.get(state.selectedPID)?.index ?? null;
+    }
+
+    let targetIndex;
+    if (currentIndex === null) {
+      const firstVisible = Math.max(0, Math.floor(elements.viewport.scrollTop / ROW_HEIGHT));
+      const lastVisible = Math.min(
+        state.total - 1,
+        Math.max(firstVisible, Math.floor((elements.viewport.scrollTop + processRowsViewportHeight() - 1) / ROW_HEIGHT))
+      );
+      targetIndex = direction > 0 ? firstVisible : lastVisible;
+    } else {
+      targetIndex = Math.max(0, Math.min(state.total - 1, currentIndex + direction));
+    }
+
+    state.pendingSelectionIndex = targetIndex;
+    keepRowVisible(targetIndex);
+    if (!resolvePendingSelection()) scheduleViewport(true, true);
   }
 
   async function inspectSelected() {
@@ -831,7 +910,8 @@
 
   function resetQuery() {
     state.total = 0; state.snapshotIndex = 0; state.requestedStart = -1; state.requestedEnd = -1;
-    elements.viewport.scrollTop = 0; elements.spacer.style.height = `${elements.viewport.clientHeight}px`;
+    state.pendingSelectionIndex = null;
+    elements.viewport.scrollTop = 0; elements.spacer.style.height = `${processRowsViewportHeight()}px`;
     elements.rowStripes.style.height = "0px";
     for (const view of [...state.rowViews.values()]) view.removeNow();
     updateSortIndicators(); scheduleViewport(true, true);
@@ -840,12 +920,20 @@
   function updateSortIndicators() {
     document.querySelectorAll("[data-sort]").forEach(button => {
       const active = button.dataset.sort === state.sort;
-      button.querySelector(".sort-mark").textContent = active ? (state.ascending ? "⌃" : "⌄") : "";
+      const mark = button.querySelector(".sort-mark");
+      mark.classList.toggle("visible", active);
+      mark.classList.toggle("ascending", active && state.ascending);
+      mark.classList.toggle("descending", active && !state.ascending);
       button.setAttribute("aria-sort", active ? (state.ascending ? "ascending" : "descending") : "none");
     });
   }
 
+  function updateHorizontalScrollState() {
+    elements.viewport.classList.toggle("has-horizontal-offset", elements.viewport.scrollLeft > .5);
+  }
+
   elements.viewport.addEventListener("scroll", () => {
+    updateHorizontalScrollState();
     if (state.scrollTimer) return;
     state.scrollTimer = window.setTimeout(() => { state.scrollTimer = 0; scheduleViewport(); }, 16);
   }, { passive: true });
@@ -857,12 +945,14 @@
   }, { passive: false });
 
   new ResizeObserver(() => {
-    elements.spacer.style.height = `${Math.max(state.total * ROW_HEIGHT, elements.viewport.clientHeight)}px`;
+    elements.spacer.style.height = `${Math.max(state.total * ROW_HEIGHT, processRowsViewportHeight())}px`;
+    updateHorizontalScrollState();
     scheduleViewport(true, true); chart.render();
   }).observe(elements.viewport);
 
   elements.rows.addEventListener("click", event => {
     const row = event.target.closest(".process-row"); if (row) selectProcess(Number(row.dataset.pid), row.dataset.name || "");
+    if (row) elements.viewport.focus({ preventScroll: true });
   });
   elements.rows.addEventListener("dblclick", event => {
     const row = event.target.closest(".process-row");
@@ -888,6 +978,14 @@
   document.addEventListener("keydown", event => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault(); elements.search.focus(); elements.search.select();
+    }
+    if ((event.key === "ArrowUp" || event.key === "ArrowDown") &&
+        !event.metaKey && !event.ctrlKey && !event.altKey &&
+        !elements.stopDialog.open && !elements.drawer.classList.contains("open") &&
+        !(event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']"))) {
+      event.preventDefault();
+      elements.viewport.focus({ preventScroll: true });
+      moveProcessSelection(event.key === "ArrowDown" ? 1 : -1);
     }
     if (event.key === "Escape") closeDrawer();
   });

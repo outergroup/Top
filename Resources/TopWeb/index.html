@@ -27,16 +27,15 @@
         </label>
       </div>
 
-      <div class="table-header process-grid" role="row">
-        <button data-sort="command" role="columnheader">Command <span class="sort-mark"></span></button>
-        <button data-sort="user" role="columnheader">User <span class="sort-mark"></span></button>
-        <button data-sort="cpu" class="number" role="columnheader"><span>% CPU</span><span class="sort-mark">⌄</span></button>
-        <button data-sort="cputime" class="number" role="columnheader">Total CPU Time <span class="sort-mark"></span></button>
-        <button data-sort="memory" class="number" role="columnheader">Memory <span class="sort-mark"></span></button>
-        <button data-sort="pid" class="number" role="columnheader">PID <span class="sort-mark"></span></button>
-      </div>
-
       <div id="process-viewport" class="process-viewport" role="table" aria-rowcount="0" tabindex="0">
+        <div class="table-header process-grid" role="row">
+          <button data-sort="command" role="columnheader">Command <span class="sort-mark"></span></button>
+          <button data-sort="user" role="columnheader">User <span class="sort-mark"></span></button>
+          <button data-sort="cpu" class="number" role="columnheader"><span>% CPU</span><span class="sort-mark"></span></button>
+          <button data-sort="cputime" class="number" role="columnheader">Total CPU Time <span class="sort-mark"></span></button>
+          <button data-sort="memory" class="number" role="columnheader">Memory <span class="sort-mark"></span></button>
+          <button data-sort="pid" class="number" role="columnheader">PID <span class="sort-mark"></span></button>
+        </div>
         <div id="row-spacer" class="row-spacer">
           <div id="row-stripes" class="row-stripes" aria-hidden="true"></div>
           <div id="rows" class="rows" role="rowgroup"></div>
