@@ -305,6 +305,27 @@ final class ProcessQuitDialog {
         return true
     }
 
+    func accessibilitySnapshot() -> OuterframeAccessibilitySnapshot? {
+        guard let host = hostLayer, !overlayLayer.isHidden else { return nil }
+        let buttons = [cancelButton, forceQuitButton, quitButton]
+        let children = buttons.enumerated().map { index, button in
+            OuterframeAccessibilityNode(identifier: 0xF0000001 + UInt32(index), role: .button,
+                frame: host.convert(button.container.bounds, from: button.container),
+                label: button.textLayer.string as? String, actions: [.press])
+        }
+        return OuterframeAccessibilitySnapshot(rootNodes: [OuterframeAccessibilityNode(identifier: 0xF0000000,
+            role: .container, frame: host.convert(panelLayer.bounds, from: panelLayer),
+            label: titleLayer.string as? String, value: messageLayer.string as? String, children: children)])
+    }
+
+    func performAccessibilityAction(identifier: UInt32, action: OuterframeAccessibilityAction) {
+        guard action == .press, !overlayLayer.isHidden,
+              identifier >= 0xF0000001, identifier <= 0xF0000003 else { return }
+        let button = [cancelButton, forceQuitButton, quitButton][Int(identifier - 0xF0000001)]
+        dismiss()
+        onAction(button.action)
+    }
+
     func handleMouseUp(at point: CGPoint) -> Bool {
         guard let host = hostLayer,
               overlayLayer.superlayer === host,

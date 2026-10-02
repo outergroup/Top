@@ -632,7 +632,54 @@ final class ProcessDetailContentController: NSObject, TopContentController {
        pendingDetailSnapshot = nil
     }
 
+    private var accessibilityIdentifiers: [String: UInt32] = [:]
+    private var accessibilityNodes: [UInt32: OuterframeAccessibilityNode] = [:]
+
+    private func prepareAccessibilityNodes(_ originals: [OuterframeAccessibilityNode], key: String) -> [OuterframeAccessibilityNode] {
+        var occurrences: [String: Int] = [:]
+        return originals.map { original in
+            var node = original
+            let name = node.label == "Open file" ? (node.value ?? "") : (node.label ?? "")
+            let occurrence = occurrences[name, default: 0]
+            occurrences[name] = occurrence + 1
+            let identity = key + "/" + name + "/" + String(occurrence)
+            if accessibilityIdentifiers[identity] == nil { accessibilityIdentifiers[identity] = UInt32(accessibilityIdentifiers.count + 1) }
+            node.identifier = accessibilityIdentifiers[identity] ?? 0
+            if node.role == .button { node.actions = [.press] }
+            if node.role == .scrollArea { node.actions = [.scrollUp, .scrollDown] }
+            node.children = prepareAccessibilityNodes(node.children, key: identity)
+            accessibilityNodes[node.identifier] = node
+            return node
+        }
+    }
+
+    private func performAccessibilityAction(identifier: UInt32, action: OuterframeAccessibilityAction, value: String) {
+        _ = accessibilitySnapshot()
+        guard let node = accessibilityNodes[identifier], node.isEnabled, node.actions.supports(action) else { return }
+        if let alert = quitConfirmationAlert, !alert.overlayLayer.isHidden {
+            guard action == .press, let button = alert.buttons.first(where: { ($0.textLayer.string as? String) == node.label }) else { return }
+            handleQuitAlertAction(button.action)
+        } else if action == .press {
+            handleDetailQuitTapped()
+        } else if action == .scrollUp || action == .scrollDown {
+            _ = scrollDetailOpenFiles(byAdjustedDeltaY: (action == .scrollDown ? -1 : 1) * layers.openFiles.viewportLayer.bounds.height * 0.8)
+        }
+        notifyAccessibilityTreeChanged()
+    }
+
     func accessibilitySnapshot() -> OuterframeAccessibilitySnapshot? {
+        accessibilityNodes.removeAll(keepingCapacity: true)
+        if let alert = quitConfirmationAlert, !alert.overlayLayer.isHidden {
+            let root = layers.rootLayer
+            let children = alert.buttons.map { button in
+                OuterframeAccessibilityNode(identifier: 0, role: .button,
+                    frame: root.convert(button.container.bounds, from: button.container), label: button.textLayer.string as? String)
+            }
+            let modal = OuterframeAccessibilityNode(identifier: 0, role: .container,
+                frame: root.convert(alert.panelLayer.bounds, from: alert.panelLayer),
+                label: alert.titleLayer.string as? String, value: alert.messageLayer.string as? String, children: children)
+            return OuterframeAccessibilitySnapshot(rootNodes: prepareAccessibilityNodes([modal], key: "dialog"))
+        }
         var nextId: UInt32 = 0
         func makeId() -> UInt32 {
             let id = nextId
@@ -778,13 +825,13 @@ final class ProcessDetailContentController: NSObject, TopContentController {
                 openFilesChildren.append(rowNode)
             }
 
-            let openFilesFrame = frameInRoot(layers.openFiles.sectionLayer)
+            let openFilesFrame = frameInRoot(layers.openFiles.viewportLayer)
             let totalCount = detailOpenFileLines.count
             let visibleCount = visibleRange.count
             let hint = totalCount > visibleCount ? "Showing \(visibleCount) of \(totalCount) entries" : nil
             let openFilesNode = OuterframeAccessibilityNode(
                 identifier: makeId(),
-                role: .container,
+                role: .scrollArea,
                 frame: openFilesFrame,
                 label: "Open Files and Ports",
                 hint: hint,
@@ -801,7 +848,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             children: children
         )
 
-        return OuterframeAccessibilitySnapshot(rootNodes: [rootNode])
+        return OuterframeAccessibilitySnapshot(rootNodes: prepareAccessibilityNodes([rootNode], key: "details"))
     }
 
     private func notifyAccessibilityTreeChanged() {
@@ -2316,6 +2363,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     }
 
     private func presentQuitConfirmation(for entry: ProcessEntry) {
+        defer { notifyAccessibilityTreeChanged() }
 
         let root = layers.rootLayer
         let alert = ensureQuitConfirmationAlert(attachingTo: root)
@@ -2545,6 +2593,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     }
 
     private func dismissQuitConfirmation() {
+        defer { notifyAccessibilityTreeChanged() }
         guard let alert = quitConfirmationAlert else { return }
         performWithoutAnimation {
             alert.overlayLayer.opacity = 0
@@ -3390,6 +3439,9 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
 
         case .editCommandValidationRequest(let requestID, _):
             outerframeHost.sendEditCommandValidationResponse(requestID: requestID, enabledCommands: [])
+
+        case .accessibilityAction(let identifier, let action, let value):
+            performAccessibilityAction(identifier: identifier, action: action, value: value)
 
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,

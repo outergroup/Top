@@ -1473,7 +1473,7 @@ final class ProcessTable {
         return (even: evenColor, odd: oddColor)
     }
 
-    private func selectRow(at index: Int, ensureVisible: Bool = false) {
+    func selectRow(at index: Int, ensureVisible: Bool = false) {
         guard index >= 0 else { return }
         if model.displayedRowCount > 0 && index >= model.displayedRowCount {
             return

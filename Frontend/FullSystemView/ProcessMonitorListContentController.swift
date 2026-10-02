@@ -326,7 +326,64 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         appConnection.sendTextInputGeometryUpdate(nil)
     }
 
+    private var accessibilityIdentifiers: [String: UInt32] = [:]
+    private var accessibilityNodes: [UInt32: OuterframeAccessibilityNode] = [:]
+
+    private func prepareAccessibilityNode(_ original: OuterframeAccessibilityNode, key: String) -> OuterframeAccessibilityNode {
+        var node = original
+        let identity = key + "/" + (node.label ?? "")
+        if accessibilityIdentifiers[identity] == nil { accessibilityIdentifiers[identity] = UInt32(accessibilityIdentifiers.count + 1) }
+        node.identifier = accessibilityIdentifiers[identity] ?? 0
+        if node.role == .button { node.actions = [.press] }
+        if node.label == "Stop" || node.label == "Inspect" { node.isEnabled = model.selectedProcess != nil }
+        if node.role == .textField {
+            node.actions = [.focus, .setValue]
+            node.value = searchFieldInputController.text
+            node.isFocused = searchFieldInputController.isFocused
+        }
+        if node.role == .table { node.actions = [.scrollUp, .scrollDown] }
+        if node.role == .row, node.rowIndex != nil { node.actions = [.press, .focus] }
+        node.children = node.children.map { prepareAccessibilityNode($0, key: identity) }
+        accessibilityNodes[node.identifier] = node
+        return node
+    }
+
+    private func performAccessibilityAction(identifier: UInt32, action: OuterframeAccessibilityAction, value: String) {
+        if let quitDialog {
+            quitDialog.performAccessibilityAction(identifier: identifier, action: action)
+            notifyAccessibilityTreeChanged()
+            return
+        }
+        _ = accessibilitySnapshot()
+        guard let node = accessibilityNodes[identifier], node.isEnabled, node.actions.supports(action) else { return }
+        switch action {
+        case .setValue:
+            focusSearchField()
+            searchFieldInputController.setText(value)
+        case .focus, .press:
+            if node.role == .textField { focusSearchField() }
+            else if let index = node.rowIndex {
+                blurSearchField()
+                updateInputMode()
+                processTable?.selectRow(at: index, ensureVisible: true)
+            }
+            else if node.label == "Stop", let process = model.selectedProcess { promptToStopProcess(process) }
+            else if node.label == "Inspect", let process = model.selectedProcess { launchProcessInspector(process) }
+            else {
+                let point = CGPoint(x: node.frame.midX, y: node.frame.midY)
+                mouseDown(at: point, modifierFlags: [], clickCount: 1)
+                mouseUp(at: point, modifierFlags: [])
+            }
+        case .scrollUp, .scrollDown:
+            scrollWheel(delta: CGPoint(x: 0, y: (action == .scrollDown ? -1 : 1) * node.frame.height * 0.8),
+                        at: CGPoint(x: node.frame.midX, y: node.frame.midY), modifierFlags: [], phase: [], momentumPhase: [], hasPreciseScrollingDeltas: true)
+        default: break
+        }
+        notifyAccessibilityTreeChanged()
+    }
+
     func accessibilitySnapshot() -> OuterframeAccessibilitySnapshot? {
+        if let quitDialog { return quitDialog.accessibilitySnapshot() }
         guard let layers else { return nil }
 
         var nextId: UInt32 = 0
@@ -441,7 +498,8 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             identifier: makeId(),
             role: .container,
             frame: cpuChartFrame,
-            label: "CPU History Chart"
+            label: "CPU History Chart",
+            value: cpuHistoryAccessibilitySummary()
         )
 
         // Threads and Processes counts
@@ -457,14 +515,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             value: threadsValueText
         )
 
-        let threadsLabelFrame = frameInRoot(layers.system.threadsLabelLayer)
-        let threadsLabelNode = OuterframeAccessibilityNode(
-            identifier: makeId(),
-            role: .staticText,
-            frame: threadsLabelFrame,
-            label: "Visible Threads"
-        )
-
         let processesValueFrame = frameInRoot(layers.system.processesValueLayer)
         let processesValueText = (layers.system.processesValueLayer.string as? String) ?? "—"
         let processesValueNode = OuterframeAccessibilityNode(
@@ -475,20 +525,12 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             value: processesValueText
         )
 
-        let processesLabelFrame = frameInRoot(layers.system.processesLabelLayer)
-        let processesLabelNode = OuterframeAccessibilityNode(
-            identifier: makeId(),
-            role: .staticText,
-            frame: processesLabelFrame,
-            label: "Processes"
-        )
-
         let countsNode = OuterframeAccessibilityNode(
             identifier: makeId(),
             role: .container,
             frame: countsSectionFrame,
             label: "System Counts",
-            children: [threadsValueNode, threadsLabelNode, processesValueNode, processesLabelNode]
+            children: [threadsValueNode, processesValueNode]
         )
 
         // Process table
@@ -502,15 +544,18 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             let adjustedHeaderFrame = headerInfo.frame.offsetBy(dx: tableFrame.origin.x, dy: tableFrame.origin.y)
 
             var headerCells: [OuterframeAccessibilityNode] = []
-            for (title, isSorted, columnFrame) in headerInfo.columns {
+            for (columnIndex, column) in headerInfo.columns.enumerated() {
+                let (title, isSorted, columnFrame) = column
                 let adjustedColumnFrame = columnFrame.offsetBy(dx: tableFrame.origin.x, dy: tableFrame.origin.y)
-                let cellLabel = isSorted ? "\(title), sorted" : title
+                let cellLabel = title
                 let headerCell = OuterframeAccessibilityNode(
                     identifier: makeId(),
                     role: .button,
                     frame: adjustedColumnFrame,
                     label: cellLabel,
-                    hint: "Click to sort by \(title)"
+                    hint: "Sort by \(title)",
+                    columnIndex: columnIndex,
+                    sortDirection: isSorted ? (model.sortAscending ? .ascending : .descending) : .none
                 )
                 headerCells.append(headerCell)
             }
@@ -530,7 +575,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         let columnLayout = processTable?.columnLayoutForAccessibility() ?? []
         if let loadedEntries = processTable?.loadedEntriesForAccessibility() {
             visibleRowCount = loadedEntries.count
-            for (_, process, rowFrame) in loadedEntries {
+            for (rowIndex, process, rowFrame) in loadedEntries {
                 let adjustedRowFrame = rowFrame.offsetBy(dx: tableFrame.origin.x, dy: tableFrame.origin.y)
 
                 // Helper to create cell frame for a specific column
@@ -596,7 +641,15 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                     frame: adjustedRowFrame,
                     label: "\(process.command) (PID \(process.pid))",
                     value: "CPU: \(String(format: "%.1f%%", process.cpuPercent)), Memory: \(formatMemory(kilobytes: process.memoryKilobytes, isKernelThread: process.isKernelThread))",
-                    children: [commandCell, userCell, cpuCell, cpuTimeCell, memoryCell, pidCell]
+                    children: [commandCell, userCell, cpuCell, cpuTimeCell, memoryCell, pidCell].enumerated().map { columnIndex, original in
+                        var cell = original
+                        cell.rowIndex = rowIndex
+                        cell.columnIndex = columnIndex
+                        return cell
+                    },
+                    isFocused: model.isTableFirstResponder && model.selectedProcess?.pid == process.pid,
+                    isSelected: model.selectedProcess?.pid == process.pid,
+                    rowIndex: rowIndex
                 )
                 tableChildren.append(rowNode)
             }
@@ -622,7 +675,15 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             children: [stopButtonNode, inspectButtonNode, searchFieldNode, cpuUsageNode, cpuChartNode, countsNode, tableNode]
         )
 
-        return OuterframeAccessibilitySnapshot(rootNodes: [rootNode])
+        accessibilityNodes.removeAll(keepingCapacity: true)
+        return OuterframeAccessibilitySnapshot(rootNodes: [prepareAccessibilityNode(rootNode, key: "")])
+    }
+
+    private func cpuHistoryAccessibilitySummary() -> String {
+        guard let first = model.cpuHistory.first, let last = model.cpuHistory.last else { return "No CPU samples yet" }
+        let values = model.cpuHistory.map { $0.user + $0.system }
+        let average = values.reduce(0, +) / Double(values.count)
+        return String(format: "Current %.1f%%, average %.1f%%, peak %.1f%% over %.0f seconds. %d logical CPUs.", last.user + last.system, average, values.max() ?? 0, last.timestamp - first.timestamp, model.logicalCpuCount)
     }
 
     private func formatCPUTime(milliseconds: Int) -> String {
@@ -1792,6 +1853,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     func onSelectionChanged() {
+        notifyAccessibilityTreeChanged()
         if model.selectedProcess == nil {
             quitDialog?.dismiss()
             quitDialog = nil
@@ -2955,7 +3017,9 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                 self.sendTerminationRequest(pid: process.pid, command: process.name, force: force)
             }
             self.quitDialog = nil
+            self.notifyAccessibilityTreeChanged()
         }
+        notifyAccessibilityTreeChanged()
     }
 
     func launchProcessInspector(_ process: ProcessMonitorListModel.ProcessInfo) {
@@ -3810,6 +3874,9 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .editCommandValidationRequest(let requestID, let commands):
             outerframeHost.sendEditCommandValidationResponse(requestID: requestID,
                                                              enabledCommands: enabledEditCommands(in: commands))
+
+        case .accessibilityAction(let identifier, let action, let value):
+            performAccessibilityAction(identifier: identifier, action: action, value: value)
 
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,
