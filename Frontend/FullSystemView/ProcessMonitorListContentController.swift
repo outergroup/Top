@@ -334,12 +334,19 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         let identity = key + "/" + (node.label ?? "")
         if accessibilityIdentifiers[identity] == nil { accessibilityIdentifiers[identity] = UInt32(accessibilityIdentifiers.count + 1) }
         node.identifier = accessibilityIdentifiers[identity] ?? 0
+        node.supportsActionSnapshot = true
         if node.role == .button { node.actions = [.press] }
         if node.label == "Stop" || node.label == "Inspect" { node.isEnabled = model.selectedProcess != nil }
         if node.role == .textField {
-            node.actions = [.focus, .setValue]
+            node.actions = [.focus, .setValue, .setSelectedTextRange]
             node.value = searchFieldInputController.text
             node.isFocused = searchFieldInputController.isFocused
+            let text = searchFieldInputController.text
+            let selection = searchFieldInputController.selectionRange ?? searchFieldInputController.cursorPosition..<searchFieldInputController.cursorPosition
+            let lower = text.index(text.startIndex, offsetBy: selection.lowerBound)
+            let upper = text.index(text.startIndex, offsetBy: selection.upperBound)
+            node.selectedTextRange = NSRange(lower..<upper, in: text)
+            node.supportsTextGeometry = true
         }
         if node.role == .table { node.actions = [.scrollUp, .scrollDown] }
         if node.role == .row, node.rowIndex != nil { node.actions = [.press, .focus] }
@@ -357,6 +364,17 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         _ = accessibilitySnapshot()
         guard let node = accessibilityNodes[identifier], node.isEnabled, node.actions.supports(action) else { return }
         switch action {
+        case .setSelectedTextRange:
+            let text = searchFieldInputController.text
+            let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2, let location = Int(parts[0]), let length = Int(parts[1]),
+                  OuterframeAccessibilityTextRange.isValid(NSRange(location: location, length: length), in: text),
+                  let selection = Range(NSRange(location: location, length: length), in: text),
+                  (text.indices.contains(selection.lowerBound) || selection.lowerBound == text.endIndex),
+                  (text.indices.contains(selection.upperBound) || selection.upperBound == text.endIndex) else { return }
+            focusSearchField()
+            searchFieldInputController.setCursorPosition(text.distance(from: text.startIndex, to: selection.lowerBound), modifySelection: false)
+            searchFieldInputController.setCursorPosition(text.distance(from: text.startIndex, to: selection.upperBound), modifySelection: true)
         case .setValue:
             focusSearchField()
             searchFieldInputController.setText(value)
@@ -3878,6 +3896,21 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
         case .accessibilityAction(let identifier, let action, let value):
             performAccessibilityAction(identifier: identifier, action: action, value: value)
 
+        case .accessibilityActionAndSnapshot(let requestID, let identifier, let action, let value):
+            performAccessibilityAction(identifier: identifier, action: action, value: value)
+            outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID, snapshot: accessibilitySnapshot())
+
+        case .accessibilityTextQuery(let requestID, let identifier, let query, let range, let point):
+            _ = accessibilitySnapshot()
+            let result: OuterframeAccessibilityTextResult?
+            if quitDialog == nil, accessibilityNodes[identifier]?.supportsTextGeometry == true, let layers {
+                let layer = layers.searchField.textLayer
+                let text = searchFieldInputController.text
+                result = accessibilitySingleLineQuery(query, range: range, point: point, text: text,
+                    line: makeSearchFieldLine(for: text), frame: layers.rootLayer.convert(layer.bounds, from: layer))
+            } else { result = nil }
+            outerframeHost.sendAccessibilityTextResponse(requestID: requestID, result: result)
+
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,
                                                              snapshot: accessibilitySnapshot())
@@ -3909,5 +3942,43 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
     func outerframeHostDidDisconnect(_ host: OuterframeHost) {
         cleanup()
         retainedSelf = nil
+    }
+}
+
+private func accessibilitySingleLineQuery(_ query: OuterframeAccessibilityTextQuery, range: NSRange,
+                                           point: CGPoint, text: String, line: CTLine,
+                                           frame: CGRect) -> OuterframeAccessibilityTextResult? {
+    let count = text.utf16.count
+    switch query {
+    case .lineForIndex:
+        guard OuterframeAccessibilityTextRange.isValid(NSRange(location: range.location, length: 0), in: text) else { return nil }
+        return OuterframeAccessibilityTextResult(index: 0)
+    case .rangeForLine:
+        guard range.location == 0 else { return nil }
+        return OuterframeAccessibilityTextResult(range: NSRange(location: 0, length: count))
+    case .visibleRange:
+        let hit = CTLineGetStringIndexForPosition(line, CGPoint(x: frame.width, y: 0))
+        let end = hit == kCFNotFound ? count : min(max(hit, 0), count)
+        let boundary = end < count ? (text as NSString).rangeOfComposedCharacterSequence(at: end).location : count
+        return OuterframeAccessibilityTextResult(range: NSRange(location: 0, length: boundary))
+    case .frameForRange:
+        guard OuterframeAccessibilityTextRange.isValid(range, in: text) else { return nil }
+        let a = CTLineGetOffsetForStringIndex(line, range.location, nil)
+        let b = CTLineGetOffsetForStringIndex(line, NSMaxRange(range), nil)
+        return OuterframeAccessibilityTextResult(range: range,
+            frame: CGRect(x: frame.minX + min(a, b), y: frame.minY, width: max(abs(b - a), 1), height: frame.height))
+    case .rangeForPosition:
+        guard frame.contains(point) else { return nil }
+        let x = point.x - frame.minX
+        let string = text as NSString
+        var offset = 0
+        while offset < count {
+            let cluster = string.rangeOfComposedCharacterSequence(at: offset)
+            let a = CTLineGetOffsetForStringIndex(line, cluster.location, nil)
+            let b = CTLineGetOffsetForStringIndex(line, NSMaxRange(cluster), nil)
+            if x >= min(a, b), x < max(a, b) { return OuterframeAccessibilityTextResult(range: cluster) }
+            offset = NSMaxRange(cluster)
+        }
+        return OuterframeAccessibilityTextResult(range: NSRange(location: x <= 0 ? 0 : count, length: 0))
     }
 }

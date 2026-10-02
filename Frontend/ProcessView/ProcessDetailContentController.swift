@@ -645,6 +645,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             let identity = key + "/" + name + "/" + String(occurrence)
             if accessibilityIdentifiers[identity] == nil { accessibilityIdentifiers[identity] = UInt32(accessibilityIdentifiers.count + 1) }
             node.identifier = accessibilityIdentifiers[identity] ?? 0
+            node.supportsActionSnapshot = true
             if node.role == .button { node.actions = [.press] }
             if node.role == .scrollArea { node.actions = [.scrollUp, .scrollDown] }
             node.children = prepareAccessibilityNodes(node.children, key: identity)
@@ -675,7 +676,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
                 OuterframeAccessibilityNode(identifier: 0, role: .button,
                     frame: root.convert(button.container.bounds, from: button.container), label: button.textLayer.string as? String)
             }
-            let modal = OuterframeAccessibilityNode(identifier: 0, role: .container,
+            let modal = OuterframeAccessibilityNode(identifier: 0, role: .dialog,
                 frame: root.convert(alert.panelLayer.bounds, from: alert.panelLayer),
                 label: alert.titleLayer.string as? String, value: alert.messageLayer.string as? String, children: children)
             return OuterframeAccessibilitySnapshot(rootNodes: prepareAccessibilityNodes([modal], key: "dialog"))
@@ -3442,6 +3443,10 @@ extension ProcessDetailContentController: OuterframeHostDelegate {
 
         case .accessibilityAction(let identifier, let action, let value):
             performAccessibilityAction(identifier: identifier, action: action, value: value)
+
+        case .accessibilityActionAndSnapshot(let requestID, let identifier, let action, let value):
+            performAccessibilityAction(identifier: identifier, action: action, value: value)
+            outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID, snapshot: accessibilitySnapshot())
 
         case .accessibilitySnapshotRequest(let requestID):
             outerframeHost.sendAccessibilitySnapshotResponse(requestID: requestID,

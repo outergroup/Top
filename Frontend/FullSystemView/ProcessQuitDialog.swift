@@ -311,10 +311,10 @@ final class ProcessQuitDialog {
         let children = buttons.enumerated().map { index, button in
             OuterframeAccessibilityNode(identifier: 0xF0000001 + UInt32(index), role: .button,
                 frame: host.convert(button.container.bounds, from: button.container),
-                label: button.textLayer.string as? String, actions: [.press])
+                label: button.textLayer.string as? String, actions: [.press], supportsActionSnapshot: true)
         }
         return OuterframeAccessibilitySnapshot(rootNodes: [OuterframeAccessibilityNode(identifier: 0xF0000000,
-            role: .container, frame: host.convert(panelLayer.bounds, from: panelLayer),
+            role: .dialog, frame: host.convert(panelLayer.bounds, from: panelLayer),
             label: titleLayer.string as? String, value: messageLayer.string as? String, children: children)])
     }
 
