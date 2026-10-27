@@ -94,6 +94,7 @@ install_shared_resources() {
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${app_root}/bundles/TopContent.bundle.macos-x86.aar"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${app_root}/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/index.html" "${app_root}/web/index.html"
+    install -m 0644 "${REPO_ROOT}/app-icon.png" "${app_root}/web/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${app_root}/web/top.css"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.js" "${app_root}/web/top.js"
 }
@@ -156,6 +157,7 @@ package_macos_variant() {
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-x86.aar"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/index.html" "${macos_app_root}/Contents/Resources/web/index.html"
+    install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/web/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${macos_app_root}/Contents/Resources/web/top.css"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.js" "${macos_app_root}/Contents/Resources/web/top.js"
     write_info_plist "${macos_app_root}"

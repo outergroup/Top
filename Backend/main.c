@@ -5157,6 +5157,11 @@ static void process_client_request(StreamClient *client) {
         queue_outer_descriptor(client, query, request, request_header_length, !head_only);
         return;
     }
+    if (strcmp(target, "/web/app-icon.png") == 0 || strcmp(target, "/favicon.ico") == 0) {
+        queue_web_file(client, "app-icon.png", "image/png",
+                       request, request_header_length, !head_only);
+        return;
+    }
     if (strcmp(target, "/web/top.css") == 0) {
         queue_web_file(client, "top.css", "text/css; charset=utf-8",
                        request, request_header_length, !head_only);
