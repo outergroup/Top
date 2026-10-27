@@ -51,7 +51,7 @@ extern int launch_activate_socket(const char *name, int **fds, size_t *cnt);
 #endif
 
 #define MAX_REQUEST_SIZE 8192
-#define JSON_BUFFER_SIZE (512 * 1024)
+#define DETAIL_BUFFER_SIZE (512 * 1024)
 #define STREAM_INTERVAL_SEC 1
 #define STREAM_BUFFER_SIZE (1024 * 1024)
 #define MAX_DESCRIPTOR_LEN 32
@@ -145,6 +145,8 @@ static void configure_bundle_resource_paths_from_main_bundle(void) {
     }
 }
 #endif
+
+#include "EnvironmentTools.h"
 
 typedef struct ProcessIdentity {
     int pid;
@@ -455,7 +457,7 @@ static double compute_cpu_percent(int slot,
 static ProcessSnapshot *append_snapshot_history(const ProcessSnapshot *snapshot);
 static ProcessSnapshot *history_entry_at(size_t order_index);
 static size_t copy_cpu_metric_history(CpuMetricHistoryEntry **out_entries);
-static size_t build_cpu_history_json(char *buffer, size_t cap);
+static size_t build_cpu_history_binary(char *buffer, size_t cap);
 static bool build_process_snapshot_view(ProcessSnapshotView *view, const ProcessWindowRequest *request);
 static bool build_time_window_snapshot(ProcessSnapshotView *view, const ProcessWindowRequest *request);
 static int find_active_process_slot(int pid);
@@ -2325,56 +2327,40 @@ static size_t copy_cpu_metric_history(CpuMetricHistoryEntry **out_entries) {
     return count;
 }
 
-static size_t build_cpu_history_json(char *buffer, size_t cap) {
-    if (!buffer || cap == 0) {
-        return 0;
-    }
+static void top_put_u32(char *p, uint32_t value) {
+    for (unsigned i = 0; i < 4; i++) p[i] = (char)(value >> (8 * i));
+}
+static void top_put_u64(char *p, uint64_t value) {
+    for (unsigned i = 0; i < 8; i++) p[i] = (char)(value >> (8 * i));
+}
+static void top_put_double(char *p, double value) {
+    uint64_t bits; memcpy(&bits, &value, sizeof(bits)); top_put_u64(p, bits);
+}
+static bool top_put_string(char *buffer, size_t cap, size_t *length, size_t field, const char *value) {
+    size_t count = value ? strlen(value) : 0;
+    if (*length > cap || count > cap - *length || *length + count > UINT32_MAX) return false;
+    top_put_u32(buffer + field, (uint32_t)*length);
+    top_put_u32(buffer + field + 4, (uint32_t)count);
+    if (count) memcpy(buffer + *length, value, count);
+    *length += count;
+    return true;
+}
+static size_t build_cpu_history_binary(char *buffer, size_t cap) {
     CpuMetricHistoryEntry *entries = NULL;
     size_t count = copy_cpu_metric_history(&entries);
-    if (count == 0 || !entries) {
-        int n = snprintf(buffer, cap, "{\"samples\":[]}");
-        if (n < 0 || (size_t)n >= cap) {
-            free(entries);
-            return 0;
-        }
-        free(entries);
-        return (size_t)n;
+    if (cap < 32 || count > (cap - 32) / 40 || (count && !entries)) { free(entries); return 0; }
+    size_t length = 32 + count * 40;
+    memset(buffer, 0, length);
+    memcpy(buffer, "OTCH", 4); top_put_u32(buffer + 4, 1); top_put_u32(buffer + 8, (uint32_t)length);
+    top_put_u32(buffer + 12, (uint32_t)count); top_put_u32(buffer + 16, 40); top_put_u32(buffer + 20, 32);
+    for (size_t i = 0; i < count; i++) {
+        char *row = buffer + 32 + i * 40;
+        top_put_double(row, entries[i].timestamp); top_put_u32(row + 8, entries[i].has_cpu ? 1 : 0);
+        top_put_double(row + 16, entries[i].cpu_user); top_put_double(row + 24, entries[i].cpu_system);
+        top_put_double(row + 32, entries[i].cpu_idle);
     }
-
-    size_t len = 0;
-    int n = snprintf(buffer, cap, "{\"samples\":[");
-    if (n < 0 || (size_t)n >= cap) {
-        free(entries);
-        return 0;
-    }
-    len += (size_t)n;
-
-    for (size_t i = 0; i < count; ++i) {
-        const CpuMetricHistoryEntry *entry = &entries[i];
-        const char *sep = (i == 0) ? "" : ",";
-        n = snprintf(buffer + len,
-                     cap - len,
-                     "%s{\"timestamp\":%.3f,\"hasCPU\":%s,\"userPercent\":%.2f,\"systemPercent\":%.2f,\"idlePercent\":%.2f}",
-                     sep,
-                     entry->timestamp,
-                     entry->has_cpu ? "true" : "false",
-                     entry->cpu_user,
-                     entry->cpu_system,
-                     entry->cpu_idle);
-        if (n < 0 || (size_t)n >= cap - len) {
-            free(entries);
-            return 0;
-        }
-        len += (size_t)n;
-    }
-
-    n = snprintf(buffer + len, cap - len, "]}");
     free(entries);
-    if (n < 0 || (size_t)n >= cap - len) {
-        return 0;
-    }
-    len += (size_t)n;
-    return len;
+    return length;
 }
 
 static bool copy_single_snapshot(const ProcessSnapshot *source, ProcessSnapshotView *view) {
@@ -4026,27 +4012,28 @@ static bool fetch_process_detail(int pid,
     return true;
 }
 
-static void escape_json(const char *src, char *dst, size_t cap) {
-    size_t out = 0;
-    for (const unsigned char *p = (const unsigned char *)src; *p && out + 2 < cap; ++p) {
-        unsigned char ch = *p;
-        if (ch == '"' || ch == '\\') {
-            if (out + 2 >= cap) {
-                break;
-            }
-            dst[out++] = '\\';
-            dst[out++] = (char)ch;
-        } else if (ch >= 0x20 && ch < 0x7f) {
-            dst[out++] = (char)ch;
-        } else {
-            if (out + 6 >= cap) {
-                break;
-            }
-            snprintf(dst + out, cap - out, "\\u%04x", ch);
-            out += 6;
-        }
+static size_t encode_process_detail(const ProcessDetail *detail, const OpenFileEntry *files, size_t count,
+                                    const char *error, char *buffer, size_t cap) {
+    if (cap < 144 || count > (cap - 144) / 24) return 0;
+    size_t length = 144 + count * 24;
+    memset(buffer, 0, length);
+    memcpy(buffer, "OTPD", 4); top_put_u32(buffer + 4, 1); top_put_u32(buffer + 12, (uint32_t)count);
+    top_put_u32(buffer + 16, 24); top_put_u32(buffer + 20, 144); top_put_u32(buffer + 24, (uint32_t)length);
+    top_put_u32(buffer + 28, detail->is_kernel_thread ? 1 : 0);
+    top_put_double(buffer + 32, current_time_seconds()); top_put_u32(buffer + 40, (uint32_t)detail->pid);
+    top_put_u32(buffer + 44, (uint32_t)detail->parent_pid); top_put_double(buffer + 48, detail->cpu_percent);
+    top_put_u64(buffer + 56, (uint64_t)detail->rss_kb); top_put_u64(buffer + 64, (uint64_t)detail->vsz_kb);
+    top_put_u64(buffer + 72, (uint64_t)detail->cpu_time_ms); top_put_u32(buffer + 80, detail->thread_count > 0 ? (uint32_t)detail->thread_count : 0);
+    const char *fields[] = {detail->user, detail->command, detail->short_command, detail->parent_short_command, detail->launch_time, error};
+    for (size_t i = 0; i < 6; i++) if (!top_put_string(buffer, cap, &length, 88 + i * 8, fields[i])) return 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t offset = 144 + i * 24;
+        if (!top_put_string(buffer, cap, &length, offset, files[i].descriptor) ||
+            !top_put_string(buffer, cap, &length, offset + 8, files[i].type) ||
+            !top_put_string(buffer, cap, &length, offset + 16, files[i].name)) return 0;
     }
-    dst[out] = '\0';
+    top_put_u32(buffer + 8, (uint32_t)length);
+    return length;
 }
 
 static size_t build_outer_plugin_payload(const char *query, char *buffer, size_t cap) {
@@ -4114,156 +4101,9 @@ static size_t build_outer_plugin_payload(const char *query, char *buffer, size_t
         return 0;
     }
 
-    char full_command_escaped[256];
-    char short_cmd_escaped[192];
-    char user_escaped[192];
-    escape_json(detail.command, full_command_escaped, sizeof(full_command_escaped));
-    escape_json(detail.short_command, short_cmd_escaped, sizeof(short_cmd_escaped));
-    escape_json(detail.user, user_escaped, sizeof(user_escaped));
-
-    size_t len = 0;
-    bool has_parent_short = detail.parent_short_command[0] != '\0';
-    char parent_short_escaped[192];
-    if (has_parent_short) {
-        escape_json(detail.parent_short_command, parent_short_escaped, sizeof(parent_short_escaped));
-    }
-
-    bool has_launch_time = detail.launch_time[0] != '\0';
-    char launch_escaped[128];
-    if (has_launch_time) {
-        escape_json(detail.launch_time, launch_escaped, sizeof(launch_escaped));
-    }
-
-    char parent_json[256];
-    if (has_parent_short) {
-        snprintf(parent_json, sizeof(parent_json), "\"%s\"", parent_short_escaped);
-    } else {
-        strcpy(parent_json, "null");
-    }
-
-    char launch_json[160];
-    if (has_launch_time) {
-        snprintf(launch_json, sizeof(launch_json), "\"%s\"", launch_escaped);
-    } else {
-        strcpy(launch_json, "null");
-    }
-
-    char thread_json[32];
-    if (detail.thread_count > 0) {
-        snprintf(thread_json, sizeof(thread_json), "%d", detail.thread_count);
-    } else {
-        strcpy(thread_json, "null");
-    }
-
-    int n = snprintf(buffer + len, cap - len,
-                     "{\"mode\":\"detail\",\"detail\":{\"pid\":%d,\"detailAPIPath\":\"/api/processes/%d\","
-                     "\"listAPIPath\":\"/api/processes\",\"parentPID\":%d,\"parentCommand\":%s,"
-                     "\"command\":\"%s\",\"shortCommand\":\"%s\",\"commandLine\":\"%s\",\"isKernelThread\":%s",
-                     detail.pid,
-                     detail.pid,
-                     detail.parent_pid,
-                     parent_json,
-                     short_cmd_escaped,
-                     short_cmd_escaped,
-                     full_command_escaped,
-                     detail.is_kernel_thread ? "true" : "false");
-    if (n < 0 || (size_t)n >= cap - len) {
-        len = 0;
-        goto cleanup;
-    }
-    len += (size_t)n;
-
-    n = snprintf(buffer + len, cap - len,
-                 ",\"snapshot\":{\"pid\":%d,\"parentPID\":%d,\"parentCommand\":%s,\"command\":\"%s\","
-                 "\"shortCommand\":\"%s\",\"commandLine\":\"%s\",\"cpuPercent\":%.2f,\"memoryKilobytes\":%ld,"
-                 "\"isKernelThread\":%s,"
-                 "\"cpuTimeMilliseconds\":%ld,\"user\":\"%s\",\"threadCount\":%s,\"launchTime\":%s,\"openFiles\":[",
-                 detail.pid,
-                 detail.parent_pid,
-                 parent_json,
-                 short_cmd_escaped,
-                 short_cmd_escaped,
-                 full_command_escaped,
-                 detail.cpu_percent,
-                 detail.rss_kb,
-                 detail.is_kernel_thread ? "true" : "false",
-                 detail.cpu_time_ms,
-                 user_escaped,
-                 thread_json,
-                 launch_json);
-    if (n < 0 || (size_t)n >= cap - len) {
-        len = 0;
-        goto cleanup;
-    }
-    len += (size_t)n;
-
-    for (size_t i = 0; i < open_file_count; ++i) {
-        if (len >= cap) {
-            len = 0;
-            goto cleanup;
-        }
-        if (i > 0) {
-            if (len + 1 >= cap) {
-                len = 0;
-                goto cleanup;
-            }
-            buffer[len++] = ',';
-        }
-        char descriptor_escaped[128];
-        char type_escaped[128];
-        char name_escaped[256];
-        escape_json(open_files[i].descriptor, descriptor_escaped, sizeof(descriptor_escaped));
-        escape_json(open_files[i].type, type_escaped, sizeof(type_escaped));
-        escape_json(open_files[i].name, name_escaped, sizeof(name_escaped));
-        n = snprintf(buffer + len, cap - len,
-                     "{\"descriptor\":\"%s\",\"type\":\"%s\",\"name\":\"%s\"}",
-                     descriptor_escaped,
-                     type_escaped,
-                     name_escaped);
-        if (n < 0 || (size_t)n >= cap - len) {
-            len = 0;
-            goto cleanup;
-        }
-        len += (size_t)n;
-    }
-
-    if (len + strlen("],\"openFilesError\":") >= cap) {
-        len = 0;
-        goto cleanup;
-    }
-    memcpy(buffer + len, "],\"openFilesError\":", strlen("],\"openFilesError\":"));
-    len += strlen("],\"openFilesError\":");
-
-    if (open_files_error) {
-        char error_escaped[256];
-        escape_json(open_files_error, error_escaped, sizeof(error_escaped));
-        n = snprintf(buffer + len, cap - len, "\"%s\"", error_escaped);
-        if (n < 0 || (size_t)n >= cap - len) {
-            len = 0;
-            goto cleanup;
-        }
-        len += (size_t)n;
-    } else {
-        if (len + 4 >= cap) {
-            len = 0;
-            goto cleanup;
-        }
-        memcpy(buffer + len, "null", 4);
-        len += 4;
-    }
-
-    if (len + 3 >= cap) {
-        len = 0;
-        goto cleanup;
-    }
-    buffer[len++] = '}';
-    buffer[len++] = '}';
-    buffer[len++] = '}';
-
-cleanup:
-    free(open_files);
-    free(open_files_error);
-    return len;
+    size_t length = encode_process_detail(&detail, open_files, open_file_count, open_files_error, buffer, cap);
+    free(open_files); free(open_files_error);
+    return length;
 }
 
 static bool client_init(StreamClient *client, int fd) {
@@ -4522,9 +4362,7 @@ static void queue_plain_text_response(StreamClient *client, int status, const ch
                    msg, strlen(msg), close_after);
 }
 
-static void queue_json_response(StreamClient *client, const char *json, size_t len, bool close_after) {
-    queue_response(client, 200, "OK", "application/json; charset=utf-8", json, len, close_after);
-}
+
 
 static void queue_cached_memory_response(StreamClient *client,
                                          const char *request,
@@ -4616,7 +4454,7 @@ static void queue_outer_descriptor(StreamClient *client,
                                    const char *request,
                                    size_t request_header_length,
                                    bool send_body) {
-    char plugin_data[JSON_BUFFER_SIZE];
+    char plugin_data[DETAIL_BUFFER_SIZE];
     size_t plugin_len = build_outer_plugin_payload(query, plugin_data, sizeof(plugin_data));
 
     size_t path_len = strlen(kBundleUrlPath);
@@ -4778,19 +4616,12 @@ static void queue_history_response(StreamClient *client, const char *query) {
 }
 
 static void queue_cpu_history_response(StreamClient *client) {
-    char *json = malloc(JSON_BUFFER_SIZE);
-    if (!json) {
-        queue_plain_text_response(client, 500, "out of memory\n", true);
-        return;
-    }
-    size_t len = build_cpu_history_json(json, JSON_BUFFER_SIZE);
-    if (len == 0) {
-        free(json);
-        queue_plain_text_response(client, 500, "failed to build cpu history\n", true);
-        return;
-    }
-    queue_json_response(client, json, len, true);
-    free(json);
+    char *buffer = malloc(DETAIL_BUFFER_SIZE);
+    if (!buffer) { queue_plain_text_response(client, 500, "out of memory\n", true); return; }
+    size_t length = build_cpu_history_binary(buffer, DETAIL_BUFFER_SIZE);
+    if (length) queue_response(client, 200, "OK", "application/octet-stream", buffer, length, true);
+    else queue_plain_text_response(client, 500, "failed to encode CPU history\n", true);
+    free(buffer);
 }
 
 static void generate_and_queue_frame(StreamClient *client) {
@@ -4975,137 +4806,12 @@ static void queue_process_detail_response(StreamClient *client, int pid) {
         return;
     }
 
-    char json[JSON_BUFFER_SIZE];
-    size_t len = 0;
-    double timestamp = current_time_seconds();
-    char user_escaped[192];
-    char command_escaped[256];
-    char short_cmd_escaped[192];
-    char parent_short_escaped[192];
-    char launch_escaped[128];
-    escape_json(detail.user, user_escaped, sizeof(user_escaped));
-    escape_json(detail.command, command_escaped, sizeof(command_escaped));
-    escape_json(detail.short_command, short_cmd_escaped, sizeof(short_cmd_escaped));
-    bool has_parent_short = detail.parent_short_command[0] != '\0';
-    if (has_parent_short) {
-        escape_json(detail.parent_short_command, parent_short_escaped, sizeof(parent_short_escaped));
-    }
-    bool has_launch_time = detail.launch_time[0] != '\0';
-    if (has_launch_time) {
-        escape_json(detail.launch_time, launch_escaped, sizeof(launch_escaped));
-    }
-
-    char launch_json[160];
-    if (has_launch_time) {
-        snprintf(launch_json, sizeof(launch_json), "\"%s\"", launch_escaped);
-    } else {
-        strcpy(launch_json, "null");
-    }
-
-    char parent_json[256];
-    if (has_parent_short) {
-        snprintf(parent_json, sizeof(parent_json), "\"%s\"", parent_short_escaped);
-    } else {
-        strcpy(parent_json, "null");
-    }
-
-    char thread_json[32];
-    if (detail.thread_count > 0) {
-        snprintf(thread_json, sizeof(thread_json), "%d", detail.thread_count);
-    } else {
-        strcpy(thread_json, "null");
-    }
-
-    int n = snprintf(json + len, sizeof(json) - len,
-                     "{\"timestamp\":%.3f,\"process\":{\"pid\":%d,\"parentPID\":%d,\"cpuPercent\":%.2f,"
-                     "\"memoryKilobytes\":%ld,\"virtualMemoryKilobytes\":%ld,\"cpuTimeMilliseconds\":%ld,"
-                     "\"isKernelThread\":%s,"
-                     "\"user\":\"%s\",\"command\":\"%s\",\"shortCommand\":\"%s\",\"commandLine\":\"%s\",\"threadCount\":%s,"
-                     "\"launchTime\":%s,\"parentShortCommand\":%s,\"openFiles\":[",
-                     timestamp,
-                     detail.pid,
-                     detail.parent_pid,
-                     detail.cpu_percent,
-                     detail.rss_kb,
-                     detail.vsz_kb,
-                     detail.cpu_time_ms,
-                     detail.is_kernel_thread ? "true" : "false",
-                     user_escaped,
-                     command_escaped,
-                     short_cmd_escaped,
-                     command_escaped,
-                     thread_json,
-                     launch_json,
-                     parent_json);
-    if (n < 0 || (size_t)n >= sizeof(json) - len) {
-        free(open_files);
-        free(open_error);
-        queue_plain_text_response(client, 500, "failed to build detail json\n", true);
-        return;
-    }
-    len += (size_t)n;
-
-    for (size_t i = 0; i < open_count; ++i) {
-        if (i > 0) {
-            json[len++] = ',';
-        }
-        char descriptor_escaped[128];
-        char type_escaped[128];
-        char name_escaped[256];
-        escape_json(open_files[i].descriptor, descriptor_escaped, sizeof(descriptor_escaped));
-        escape_json(open_files[i].type, type_escaped, sizeof(type_escaped));
-        escape_json(open_files[i].name, name_escaped, sizeof(name_escaped));
-        n = snprintf(json + len, sizeof(json) - len,
-                     "{\"descriptor\":\"%s\",\"type\":\"%s\",\"name\":\"%s\"}",
-                     descriptor_escaped,
-                     type_escaped,
-                     name_escaped);
-        if (n < 0 || (size_t)n >= sizeof(json) - len) {
-            free(open_files);
-            free(open_error);
-            queue_plain_text_response(client, 500, "failed to build detail json\n", true);
-            return;
-        }
-        len += (size_t)n;
-    }
-
-    if (len + strlen("],\"openFilesError\":") >= sizeof(json)) {
-        free(open_files);
-        free(open_error);
-        queue_plain_text_response(client, 500, "failed to build detail json\n", true);
-        return;
-    }
-    memcpy(json + len, "],\"openFilesError\":", strlen("],\"openFilesError\":"));
-    len += strlen("],\"openFilesError\":");
-
-    if (open_error) {
-        char error_escaped[256];
-        escape_json(open_error, error_escaped, sizeof(error_escaped));
-        n = snprintf(json + len, sizeof(json) - len, "\"%s\"", error_escaped);
-        if (n < 0 || (size_t)n >= sizeof(json) - len) {
-            free(open_files);
-            free(open_error);
-            queue_plain_text_response(client, 500, "failed to build detail json\n", true);
-            return;
-        }
-        len += (size_t)n;
-    } else {
-        memcpy(json + len, "null", 4);
-        len += 4;
-    }
-
-    if (len + 2 >= sizeof(json)) {
-        free(open_files);
-        free(open_error);
-        queue_plain_text_response(client, 500, "failed to build detail json\n", true);
-        return;
-    }
-    json[len++] = '}';
-    json[len++] = '}';
-
-    free(open_files);
-    free(open_error);
-    queue_json_response(client, json, len, true);
+    char *buffer = malloc(DETAIL_BUFFER_SIZE);
+    size_t length = buffer ? encode_process_detail(&detail, open_files, open_count, open_error, buffer, DETAIL_BUFFER_SIZE) : 0;
+    free(open_files); free(open_error);
+    if (length) queue_response(client, 200, "OK", "application/octet-stream", buffer, length, true);
+    else queue_plain_text_response(client, 500, "failed to encode process detail\n", true);
+    free(buffer);
 }
 
 static void process_client_request(StreamClient *client) {
@@ -5137,7 +4843,7 @@ static void process_client_request(StreamClient *client) {
     }
 
     bool head_only = (strcasecmp(method, "HEAD") == 0);
-    if (!head_only && !(strcasecmp(method, "GET") == 0)) {
+    if (!head_only && strcasecmp(method, "GET") != 0 && strcasecmp(method, "POST") != 0) {
         queue_plain_text_response(client, 400, "unsupported method\n", true);
         return;
     }
@@ -5146,6 +4852,24 @@ static void process_client_request(StreamClient *client) {
     if (query) {
         *query = '\0';
         query++;
+    }
+
+    if (strcmp(target, "/api/environments") == 0) {
+        if (strcasecmp(method, "GET") != 0 || !query || strcmp(query, "operation=processes")) {
+            queue_plain_text_response(client, 400, "expected GET operation=processes\n", true);
+            return;
+        }
+        size_t result_length = 0;
+        char *result = environment_tools_processes(&result_length);
+        if (!result) { queue_plain_text_response(client, 503, "Top helper connection failed. Check that its bundled helper is installed.\n", true); return; }
+        queue_response(client, 200, "OK", "application/octet-stream", result, result_length, true);
+        free(result); return;
+    }
+    if (strcasecmp(method, "POST") == 0) {
+        queue_plain_text_response(client, 405, "Unsupported method\n", true); return;
+    }
+    if (strcmp(target, "/web/environments.js") == 0) {
+        queue_web_file(client, "environments.js", "text/javascript; charset=utf-8", request, request_header_length, !head_only); return;
     }
 
     if (strcmp(target, "/") == 0 || strcmp(target, "/index") == 0) {

@@ -3,59 +3,14 @@ import CoreText
 import Foundation
 import QuartzCore
 
-private struct ProcessMonitorConfiguration: Decodable {
-    let apiURL: String?
-    let apiPath: String?
-    let pollIntervalSeconds: Double?
-    let limit: Int?
-}
-
-private struct ProcessMonitorInitPayload: Decodable {
-    let config: ProcessMonitorConfiguration?
-    let processMonitor: ProcessMonitorConfiguration?
-    let apiURL: String?
-    let apiPath: String?
-    let pollIntervalSeconds: Double?
-    let limit: Int?
-    let mode: String?
-    let detail: ProcessDetailInitConfiguration?
-}
-
-private struct ProcessDetailInitConfiguration: Decodable {
-    let pid: Int
-    let detailAPIPath: String?
-    let listAPIPath: String?
-    let parentPID: Int?
-    let parentCommand: String?
-    let command: String?
-    let isKernelThread: Bool?
-    let snapshot: ProcessDetailInitSnapshot?
-}
-
-private struct DetailOpenFileEntry: Decodable, Equatable {
+private struct DetailOpenFileEntry: Equatable {
     let descriptor: String
     let type: String
     let name: String
 }
 
-private struct ProcessDetailInitSnapshot: Decodable {
-    let pid: Int?
-    let parentPID: Int?
-    let parentCommand: String?
-    let command: String?
-    let openFiles: [DetailOpenFileEntry]?
-    let openFilesError: String?
-    let threadCount: Int?
-    let launchTime: String?
-    let cpuPercent: Double?
-    let memoryKilobytes: Int?
-    let isKernelThread: Bool?
-    let cpuTimeMilliseconds: Int?
-    let user: String?
-}
-
-private struct ProcessDetailResponse: Decodable {
-    struct Process: Decodable {
+private struct ProcessDetailResponse {
+    struct Process {
         let pid: Int
         let parentPID: Int?
         let parentShortCommand: String?
@@ -75,6 +30,32 @@ private struct ProcessDetailResponse: Decodable {
 
     let timestamp: Double?
     let process: Process
+    init(_ data: Data) throws {
+        let reader = try TopBinaryReader(data, magic: "OTPD", minimum: 144)
+        let count = try reader.u32(12), variable = try reader.u32(24), flags = try reader.u32(28)
+        guard try reader.u32(16) == 24, try reader.u32(20) == 144, try reader.u32(84) == 0, try reader.u64(136) == 0,
+              flags <= 1, variable <= data.count, variable == 144 + count * 24,
+              try reader.u32(40) > 0 else { throw TopBinaryReader.Failure.invalidPayload }
+        let files = try (0..<count).map { index in
+            let offset = 144 + index * 24
+            return try DetailOpenFileEntry(descriptor: reader.string(offset, variable: variable),
+                                           type: reader.string(offset + 8, variable: variable),
+                                           name: reader.string(offset + 16, variable: variable))
+        }
+        func optionalText(_ offset: Int) throws -> String? {
+            let text = try reader.string(offset, variable: variable)
+            return text.isEmpty ? nil : text
+        }
+        timestamp = try reader.number(32)
+        let threads = try reader.u32(80)
+        process = try Process(pid: reader.u32(40), parentPID: reader.u32(44),
+            parentShortCommand: optionalText(112), cpuPercent: reader.number(48),
+            memoryKilobytes: reader.integer(56), virtualMemoryKilobytes: reader.integer(64),
+            cpuTimeMilliseconds: reader.integer(72), isKernelThread: flags == 1,
+            user: reader.string(88, variable: variable), threadCount: threads == 0 ? nil : threads,
+            launchTime: optionalText(120), command: reader.string(96, variable: variable),
+            shortCommand: reader.string(104, variable: variable), openFiles: files, openFilesError: optionalText(128))
+    }
 }
 
 private struct ProcessDetailSnapshot {
@@ -117,12 +98,6 @@ private enum DetailMetric: CaseIterable {
     case parent
     case threads
     case launched
-}
-
-
-private struct TerminationServerResponse: Decodable {
-    let success: Bool
-    let error: String?
 }
 
 
@@ -981,74 +956,23 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             return
         }
 
-        let decoder = JSONDecoder()
-        var pendingDetailConfig: ProcessDetailConfig?
-        var pendingListSpecifier: String?
-
-        if let payload = try? decoder.decode(ProcessMonitorInitPayload.self, from: data) {
-            let rootConfig = ProcessMonitorConfiguration(
-                apiURL: payload.apiURL,
-                apiPath: payload.apiPath,
-                pollIntervalSeconds: payload.pollIntervalSeconds,
-                limit: payload.limit
-            )
-
-            let configChains: [ProcessMonitorConfiguration?] = [
-                rootConfig,
-                payload.config,
-                payload.processMonitor
-            ]
-
-            for config in configChains.compactMap({ $0 }) {
-                applyConfigurationDetails(config)
-            }
-
-            if let detailConfig = payload.detail {
-                pendingDetailConfig = ProcessDetailConfig(
-                    pid: detailConfig.pid,
-                    detailAPIPath: detailConfig.detailAPIPath,
-                    listAPIPath: detailConfig.listAPIPath,
-                    parentPID: detailConfig.parentPID,
-                    parentCommand: detailConfig.parentCommand,
-                    command: detailConfig.command,
-                    isKernelThread: detailConfig.isKernelThread ?? false
-                )
-                if let snapshot = detailConfig.snapshot {
-                    let seededSnapshot = ProcessDetailSnapshot(
-                        pid: snapshot.pid ?? detailConfig.pid,
-                        parentPID: snapshot.parentPID ?? detailConfig.parentPID,
-                        parentShortCommand: snapshot.parentCommand ?? detailConfig.parentCommand,
-                        cpuPercent: snapshot.cpuPercent,
-                        memoryKilobytes: snapshot.memoryKilobytes,
-                        virtualMemoryKilobytes: nil,
-                        cpuTimeMilliseconds: snapshot.cpuTimeMilliseconds,
-                        isKernelThread: snapshot.isKernelThread ?? detailConfig.isKernelThread ?? false,
-                        user: snapshot.user,
-                        threadCount: snapshot.threadCount,
-                        launchTime: snapshot.launchTime,
-                        command: snapshot.command ?? detailConfig.command,
-                        shortCommand: snapshot.command ?? detailConfig.command,
-                        openFiles: snapshot.openFiles ?? [],
-                        openFilesError: snapshot.openFilesError
-                    )
-                    pendingDetailSnapshot = seededSnapshot
-                }
-                if let listPath = detailConfig.listAPIPath,
-                   !listPath.isEmpty {
-                    pendingListSpecifier = listPath
-                }
-            }
-        } else if let configuration = try? decoder.decode(ProcessMonitorConfiguration.self, from: data) {
-            applyConfigurationDetails(configuration)
+        guard let response = try? ProcessDetailResponse(data) else {
+            showStatus("Invalid process detail payload")
+            return
         }
-
-        if let listSpecifier = pendingListSpecifier, endpointSpecifier == nil {
-            endpointSpecifier = listSpecifier
-        }
-
+        let process = response.process
+        let detailConfig = ProcessDetailConfig(pid: process.pid, detailAPIPath: "/api/processes/\(process.pid)",
+            listAPIPath: "/api/processes", parentPID: process.parentPID, parentCommand: process.parentShortCommand,
+            command: process.shortCommand ?? process.command, isKernelThread: process.isKernelThread ?? false)
+        pendingDetailSnapshot = ProcessDetailSnapshot(pid: process.pid, parentPID: process.parentPID,
+            parentShortCommand: process.parentShortCommand, cpuPercent: process.cpuPercent,
+            memoryKilobytes: process.memoryKilobytes, virtualMemoryKilobytes: process.virtualMemoryKilobytes,
+            cpuTimeMilliseconds: process.cpuTimeMilliseconds, isKernelThread: process.isKernelThread ?? false,
+            user: process.user, threadCount: process.threadCount, launchTime: process.launchTime,
+            command: process.command, shortCommand: process.shortCommand,
+            openFiles: process.openFiles ?? [], openFilesError: process.openFilesError)
+        endpointSpecifier = "/api/processes"
         ensureEndpointAvailable()
-
-        let detailConfig = pendingDetailConfig!
         self.detailConfig = detailConfig
 
         detailAPIEndpoint = resolveDetailEndpoint(for: detailConfig)
@@ -1085,25 +1009,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         updateMetaText()
     }
 
-    private func applyConfigurationDetails(_ configuration: ProcessMonitorConfiguration) {
-        if let interval = configuration.pollIntervalSeconds {
-            pollInterval = max(0.1, interval)
-        }
-
-        if let limit = configuration.limit, limit > 0 {
-            configuredRowLimit = limit
-        }
-
-        if let apiPath = configuration.apiPath,
-           !apiPath.isEmpty {
-            endpointSpecifier = apiPath
-        }
-
-        if let apiURLString = configuration.apiURL,
-           !apiURLString.isEmpty {
-            endpointSpecifier = apiURLString
-        }
-    }
 
     private func ensureEndpointAvailable() {
         if let specifier = endpointSpecifier,
@@ -1504,7 +1409,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         }
 
         var request = URLRequest(url: endpoint)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
 
         performSingleRequest(request) { [weak self] data, response, error in
             guard let self else { return }
@@ -1519,7 +1424,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
                 }
 
                 guard let data = data,
-                      let decoded = try? JSONDecoder().decode(ProcessDetailResponse.self, from: data) else {
+                      let decoded = try? ProcessDetailResponse(data) else {
                     self.scheduleNextDetailPoll()
                     return
                 }
@@ -2689,14 +2594,6 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         if !(200...299).contains(response.statusCode) {
             let description = terminationErrorDescription(data: data, response: response)
             showStatus("Failed to \(actionName) \(terminationDisplayName(pid: pid, command: command)): \(description)")
-            return
-        }
-
-        if let data, !data.isEmpty,
-           let decoded = try? JSONDecoder().decode(TerminationServerResponse.self, from: data),
-           !decoded.success {
-            let detail = decoded.error?.isEmpty == false ? decoded.error! : "Unknown error"
-            showStatus("Failed to \(actionName) \(terminationDisplayName(pid: pid, command: command)): \(detail)")
             return
         }
 

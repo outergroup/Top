@@ -77,7 +77,7 @@
     });
     return {
       tokens, logicalWidths, logicalHeight, cellWidths, offsets, horizontalPadding, sheetWidth,
-      sheetHeight: logicalHeight * colors.length, url: `url(${JSON.stringify(canvas.toDataURL("image/png"))})`
+      sheetHeight: logicalHeight * colors.length, url: `url("${canvas.toDataURL("image/png")}")`
     };
   }
 
@@ -227,18 +227,39 @@
       this.element.setAttribute("aria-selected", String(selected));
       this.element.classList.toggle("kernel-row", process.kernel);
       if (this.command !== process.command) {
-        this.command = process.command; this.commandCell.textContent = process.command || `PID ${process.pid}`;
+        this.command = process.command; this.environmentLabel = null; this.commandCell.textContent = process.command || `PID ${process.pid}`;
         this.commandCell.title = this.commandCell.textContent;
       }
       if (this.user !== process.user) {
         this.user = process.user; this.userCell.textContent = process.user || "—"; this.userCell.title = this.userCell.textContent;
       }
+      this.updateEnvironment();
       this.commandCell.classList.toggle("kernel", process.kernel);
       this.userCell.classList.toggle("kernel", process.kernel);
       this.cpuSprite.set(formatDecimal(process.cpu, 1), selected);
       this.cpuTimeSprite.set(formatCPUTime(process.cpuTimeMS), selected);
       this.memorySprite.set(process.kernel ? "—" : formatMemory(process.memoryKB), selected);
       this.pidSprite.set(String(process.pid), selected);
+    }
+
+    updateEnvironment() {
+      const environment = state.historical ? null : window.topEnvironments?.lookup(this.process.pid);
+      const label = environment?.environment || "";
+      if (this.environmentLabel !== label) {
+        this.environmentLabel = label;
+        this.commandCell.replaceChildren();
+        const command = document.createElement("span");
+        command.className = "command-name";
+        command.textContent = this.process.command || `PID ${this.process.pid}`;
+        this.commandCell.append(command);
+        if (label) {
+          const badge = document.createElement("span");
+          badge.className = "environment-label";
+          badge.textContent = label;
+          this.commandCell.append(badge);
+        }
+      }
+      this.commandCell.title = [this.process.command, label].filter(Boolean).join(" — ");
     }
 
     move(index, previousIndex, animate, isNew = false) {
@@ -460,7 +481,7 @@
     try {
       const response = await fetch("/api/processes/cpu_history", { cache: "no-store" });
       if (!response.ok) return;
-      const payload = await response.json();
+      const payload = decodeTopCPUHistory(await response.arrayBuffer());
       state.cpuHistory = (payload.samples || []).filter(sample => sample.hasCPU).map(sample => ({
         timestamp: sample.timestamp, user: sample.userPercent, system: sample.systemPercent, idle: sample.idlePercent
       }));
@@ -860,7 +881,7 @@
     try {
       const response = await fetch(`/api/processes/${pid}`, { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error((await response.text()).trim() || `Request failed (${response.status})`);
-      const payload = await response.json(); if (state.selectedPID === pid) renderProcessDetail(payload.process);
+      const payload = decodeTopProcessDetail(await response.arrayBuffer()); if (state.selectedPID === pid) renderProcessDetail(payload.process);
     } catch (error) {
       if (error.name !== "AbortError") elements.detailBody.textContent = error.message || "Could not load process details.";
     }
@@ -876,6 +897,11 @@
       ["Virtual memory", formatMemory(process.virtualMemoryKilobytes)], ["Launched", process.launchTime || "—"],
       ["Parent", process.parentShortCommand || "—"], ["Command line", process.commandLine || process.command, true]
     ];
+    const environment = window.topEnvironments?.lookup(process.pid);
+    if (environment) {
+      details.unshift(["Container", environment.environment], ["Container PID", String(environment.pid)],
+        ["Container user", environment.user]);
+    }
     for (const [label, value, wide] of details) {
       const item = document.createElement("div"); item.className = `detail-item${wide ? " detail-wide" : ""}`;
       const caption = document.createElement("span"); caption.textContent = label;
@@ -1005,6 +1031,10 @@
   appearanceQuery.addEventListener?.("change", () => {
     buildAtlases(); Object.values(metricSprites).forEach(sprite => sprite.invalidate());
     for (const view of state.rowViews.values()) view.invalidateSprites(); updateMetrics();
+  });
+
+  window.addEventListener("top-environments-changed", () => {
+    for (const view of state.rowViews.values()) view.updateEnvironment();
   });
 
   updateSortIndicators(); updateMetrics(); loadCPUHistory(); connectStream();

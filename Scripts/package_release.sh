@@ -97,6 +97,7 @@ install_shared_resources() {
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${app_root}/web/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${app_root}/web/top.css"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.js" "${app_root}/web/top.js"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/environments.js" "${app_root}/web/environments.js"
 }
 
 write_info_plist() {
@@ -160,6 +161,7 @@ package_macos_variant() {
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/web/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${macos_app_root}/Contents/Resources/web/top.css"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.js" "${macos_app_root}/Contents/Resources/web/top.js"
+    install -m 0644 "${REPO_ROOT}/Resources/TopWeb/environments.js" "${macos_app_root}/Contents/Resources/web/environments.js"
     write_info_plist "${macos_app_root}"
     sign_macos_app "${macos_app_root}"
     tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_APP_ROOT}/${output_name}.tar.gz" Top

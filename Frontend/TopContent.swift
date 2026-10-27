@@ -6,9 +6,62 @@ import Foundation
 import AppKit
 import QuartzCore
 
-private struct ProcessMonitorConfigurationProbe: Decodable {
-    struct Detail: Decodable {}
-    let detail: Detail?
+struct TopBinaryReader {
+    enum Failure: Error { case invalidPayload }
+    let bytes: [UInt8]
+    init(_ data: Data, magic: String, minimum: Int) throws {
+        bytes = Array(data)
+        guard bytes.count >= minimum, bytes.count <= 512 * 1024,
+              Array(bytes.prefix(4)) == Array(magic.utf8), try u32(4) == 1,
+              try u32(8) == bytes.count else { throw Failure.invalidPayload }
+    }
+    func u32(_ offset: Int) throws -> Int {
+        guard offset >= 0, offset <= bytes.count - 4 else { throw Failure.invalidPayload }
+        return (0..<4).reduce(0) { $0 | (Int(bytes[offset + $1]) << ($1 * 8)) }
+    }
+    func u64(_ offset: Int) throws -> UInt64 {
+        try UInt64(u32(offset)) | (UInt64(u32(offset + 4)) << 32)
+    }
+    func integer(_ offset: Int) throws -> Int {
+        guard let result = Int(exactly: try u64(offset)) else { throw Failure.invalidPayload }
+        return result
+    }
+    func number(_ offset: Int) throws -> Double {
+        let value = Double(bitPattern: try u64(offset))
+        guard value.isFinite, value >= 0 else { throw Failure.invalidPayload }
+        return value
+    }
+    func string(_ field: Int, variable: Int) throws -> String {
+        let offset = try u32(field), length = try u32(field + 4)
+        guard offset >= variable, offset <= bytes.count, length <= bytes.count - offset else { throw Failure.invalidPayload }
+        let value = bytes[offset..<(offset + length)]
+        guard !value.contains(0) else { throw Failure.invalidPayload }
+        return String(decoding: value, as: UTF8.self)
+    }
+}
+struct TopCPUHistoryResponse {
+    struct Sample {
+        let timestamp: Double
+        let hasCPU: Bool
+        let userPercent: Double
+        let systemPercent: Double
+        let idlePercent: Double
+    }
+    let samples: [Sample]
+    init(_ data: Data) throws {
+        let reader = try TopBinaryReader(data, magic: "OTCH", minimum: 32)
+        let count = try reader.u32(12)
+        guard try reader.u32(16) == 40, try reader.u32(20) == 32, try reader.u64(24) == 0,
+              count <= (data.count - 32) / 40, data.count == 32 + count * 40 else { throw TopBinaryReader.Failure.invalidPayload }
+        samples = try (0..<count).map { index in
+            let offset = 32 + index * 40
+            let flags = try reader.u32(offset + 8)
+            guard flags <= 1, try reader.u32(offset + 12) == 0 else { throw TopBinaryReader.Failure.invalidPayload }
+            return try Sample(timestamp: reader.number(offset), hasCPU: flags == 1,
+                              userPercent: reader.number(offset + 16), systemPercent: reader.number(offset + 24),
+                              idlePercent: reader.number(offset + 32))
+        }
+    }
 }
 
 func makeSystemSymbolImage(systemSymbolName: String,
@@ -118,8 +171,7 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
             let windowIsActive = arguments.windowIsActive ?? true
 
             // Determine which controller type to create based on pluginData
-            if let probe = try? JSONDecoder().decode(ProcessMonitorConfigurationProbe.self, from: data),
-               probe.detail != nil {
+            if (try? TopBinaryReader(data, magic: "OTPD", minimum: 144)) != nil {
                 if let controller = ProcessDetailContentController(outerframeHost: outerframeHost,
                                                                    appearance: appearance_,
                                                                    windowIsActive: windowIsActive,

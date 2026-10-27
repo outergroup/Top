@@ -36,6 +36,7 @@
 		37956F742FA1734900944056 /* Exceptions for "Backend" folder in "TopBackend" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Environment.c,
 				main.c,
 			);
 			target = 37630D982F495DF4000075B1 /* TopBackend */;

@@ -285,3 +285,8 @@ dialog p { margin: 10px 0 24px; color: var(--secondary-text); font-size: 13px; l
   .cpu-chart.animate-selection .selection-range { transition: none; }
   .detail-drawer { transition: none; }
 }
+
+.process-cell.command { display: flex; align-items: center; gap: 8px; }
+.command-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.environment-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10px; color: var(--secondary-text); }
+.process-row.selected .environment-label { color: inherit; opacity: .8; }

@@ -1528,32 +1528,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         var cpuHistoryRequest = URLRequest(url: apiEndpoint.appending(path: "cpu_history"))
         cpuHistoryRequest.timeoutInterval = 20
         performSingleRequest(cpuHistoryRequest) { [weak self] data, _, error in
-            struct CpuHistoryResponse: Decodable {
-                struct Sample: Decodable {
-                    let timestamp: TimeInterval
-                    let hasCPU: Bool
-                    let userPercent: Double
-                    let systemPercent: Double
-                    let idlePercent: Double
-
-                    enum CodingKeys: String, CodingKey {
-                        case timestamp
-                        case hasCPU
-                        case userPercent
-                        case systemPercent
-                        case idlePercent
-                    }
-                }
-
-                let samples: [Sample]
-            }
-
-            guard let data, error == nil else { return }
-
-            let decoder = JSONDecoder()
-            guard let response = try? decoder.decode(CpuHistoryResponse.self, from: data) else {
-                return
-            }
+            guard let data, error == nil, let response = try? TopCPUHistoryResponse(data) else { return }
 
             guard !response.samples.isEmpty else {
                 return
@@ -3104,19 +3079,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         if !(200...299).contains(response.statusCode) {
             let description = terminationErrorDescription(data: data, response: response)
             showStatus("Failed to \(actionName) \(terminationDisplayName(pid: pid, command: command)): \(description)")
-            return
-        }
-
-        struct TerminationServerResponse: Decodable {
-            let success: Bool
-            let error: String?
-        }
-
-        if let data, !data.isEmpty,
-           let decoded = try? JSONDecoder().decode(TerminationServerResponse.self, from: data),
-           !decoded.success {
-            let detail = decoded.error?.isEmpty == false ? decoded.error! : "Unknown error"
-            showStatus("Failed to \(actionName) \(terminationDisplayName(pid: pid, command: command)): \(detail)")
             return
         }
 
