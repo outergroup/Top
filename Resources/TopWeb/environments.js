@@ -70,6 +70,9 @@ function decodeEnvironmentSnapshot(buffer) {
   "use strict";
 
   let processes = new Map();
+  let snapshot = null;
+  let error = "";
+  const samples = new Map();
   let updatedAt = 0;
   let timer;
   let controller;
@@ -91,22 +94,52 @@ function decodeEnvironmentSnapshot(buffer) {
         });
         if (!response.ok) throw new Error(`Environment discovery failed (${response.status})`);
         const result = decodeEnvironmentSnapshot(await response.arrayBuffer());
+        snapshot = result;
+        error = result.errors.map(item => `${item.runtime}: ${item.error}`).join("; ");
+        const alive = new Set();
+        for (const process of result.processes) {
+          if (process.target === "host" || process.hostPID) continue;
+          const key = `${process.target}:${process.pid}:${process.start}`;
+          alive.add(key);
+          const history = samples.get(key) || [];
+          history.push({ time: result.time, ticks: process.cpuTicks });
+          while (history.length > 1 && history[1].time < result.time - 180) history.shift();
+          samples.set(key, history);
+        }
+        for (const key of samples.keys()) if (!alive.has(key)) samples.delete(key);
         const names = new Map(result.targets.map(target => [target.id, target.name]));
         processes = new Map(result.processes
           .filter(process => process.target !== "host" && process.hostPID)
           .map(process => [process.hostPID, { ...process, environment: names.get(process.target) || process.target }]));
         updatedAt = Date.now();
-      } catch (error) {
-        processes.clear();
+      } catch (failure) {
+        error = failure.message; snapshot = null; processes.clear();
       } finally {
         clearTimeout(timeout);
         window.dispatchEvent(new Event("top-environments-changed"));
       }
     }
-    if (!stopped) timer = setTimeout(refresh, 5000);
+    if (!stopped) timer = setTimeout(refresh, 1000);
   }
 
-  window.topEnvironments = { lookup };
+  function containerRows(duration) {
+    if (!snapshot || Date.now() - updatedAt > 15000) return [];
+    const names = new Map(snapshot.targets.map(target => [target.id, target.name]));
+    return snapshot.processes.filter(process => process.target !== "host" && !process.hostPID).map(process => {
+      const key = `${process.target}:${process.pid}:${process.start}`;
+      const history = samples.get(key) || [];
+      const first = history.find(sample => sample.time >= snapshot.time - duration) || history[0];
+      const elapsed = first ? snapshot.time - first.time : 0;
+      const milliseconds = first && Number.isFinite(process.cpuTicks) && Number.isFinite(first.ticks)
+        ? Math.max(0, process.cpuTicks - first.ticks) * 1000 / process.ticks : NaN;
+      const environment = { ...process, environment: names.get(process.target) || process.target };
+      return { key, pid: process.pid, command: process.command, user: process.user, kernel: false,
+        memoryKB: process.memory / 1024, cpuTimeMS: Number.isFinite(process.cpuTicks) ? process.cpuTicks * 1000 / process.ticks : NaN,
+        cpu: elapsed > 0 ? milliseconds / (elapsed * 10) : process.cpu,
+        environment, threads: process.threads, previousIndex: null };
+    });
+  }
+  window.topEnvironments = { lookup, containerRows, error: () => error };
   window.addEventListener("pagehide", () => {
     stopped = true;
     clearTimeout(timer);

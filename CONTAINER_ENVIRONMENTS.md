@@ -4,6 +4,12 @@ Top owns `outer-top-helper` in [Helper](Helper/README.md). The backend handles h
 
 Container images must install `/usr/local/bin/outer-top-helper`. The bundled base images include each app's separate executable. Custom images can COPY the app's static helper directly. Release, deployment and development scripts build it from this app's Helper directory. The container process exits when its backend connection closes; it is not a separately managed daemon.
 
+The HTML frontend merges host stream rows with helper-only container rows, using container ID, PID, and process start identity for selection. Linux container processes already visible in the host snapshot are annotated instead of duplicated. Live search and sorting include container names. The CPU chart and historical table remain host-only; the historical status makes this explicit. Container inspection shows snapshot fields, while open-file inspection remains host-only.
+
+On macOS, user Top resolves the current launchd registry socket on every discovery, so restarting Outer Shell does not require restarting Top. Root Top also discovers active user registries and accepts only local Docker sockets owned by the registry user beneath that user’s home directory.
+
+`POST /api/environments/signal` takes target, PID, start identity, and force in the query. The backend resolves the registered container and sends a binary helper request; it never treats a container PID as a host PID.
+
 The HTML frontend uses the container-aware APIs. Outerframe behavior is unchanged. Docker is tested; Apple container/wslc still require live validation. Native Windows backend integration remains separate.
 
 ## Binary data interfaces

@@ -6,7 +6,7 @@
   const OVERSCAN_ROWS = 5;
   const CHART_DURATION = 180;
   const MAX_CHART_BARS = 180;
-  const MAX_FRAME_ROWS = 10000;
+  const MAX_FRAME_ROWS = 1000000;
   const ROW_MOVE_MS = 250;
   const decoder = new TextDecoder();
   const $ = selector => document.querySelector(selector);
@@ -37,6 +37,7 @@
     rowViews: new Map(), streamController: null, viewportController: null, historyController: null, detailController: null,
     reconnectTimer: 0, reconnectAttempt: 0, viewportTimer: 0, viewportRequestAt: 0,
     scrollTimer: 0, searchTimer: 0, historyTimer: 0, historyRequestAt: 0,
+    liveFrame: null, selectedProcess: null,
     cpuHistory: [], liveMetrics: null, displayMetrics: null, atlasRevision: 0
   };
 
@@ -200,10 +201,10 @@
 
   class ProcessRowView {
     constructor(process, index, animate) {
-      this.pid = process.pid; this.index = index; this.process = process; this.transient = false;
+      this.pid = process.key; this.index = index; this.process = process; this.transient = false;
       this.element = document.createElement("div");
       this.element.className = "process-row process-grid";
-      this.element.dataset.pid = String(process.pid);
+      this.element.dataset.pid = process.key;
       this.element.setAttribute("role", "row");
       this.commandCell = appendTextCell(this.element, "command");
       this.userCell = appendTextCell(this.element, "user");
@@ -219,8 +220,9 @@
 
     update(process, index) {
       this.process = process; this.index = index;
-      const selected = process.pid === state.selectedPID;
-      this.element.dataset.pid = String(process.pid);
+      const selected = process.key === state.selectedPID;
+      if (selected) state.selectedProcess = process;
+      this.element.dataset.pid = process.key;
       this.element.dataset.name = process.command || "";
       this.element.setAttribute("aria-rowindex", String(index + 1));
       this.element.classList.toggle("selected", selected);
@@ -243,7 +245,7 @@
     }
 
     updateEnvironment() {
-      const environment = state.historical ? null : window.topEnvironments?.lookup(this.process.pid);
+      const environment = state.historical ? null : this.process.environment || window.topEnvironments?.lookup(this.process.pid);
       const label = environment?.environment || "";
       if (this.environmentLabel !== label) {
         this.environmentLabel = label;
@@ -304,7 +306,8 @@
 
   function queryForViewport(start, end, includeClient = true, selection = state.selection) {
     const query = new URLSearchParams({
-      start: String(start), end: String(end), search: state.search, sort: state.sort,
+      start: String(selection.mode === "fixed" ? start : 0), end: String(selection.mode === "fixed" ? end : MAX_FRAME_ROWS),
+      search: selection.mode === "fixed" ? state.search : "", sort: state.sort,
       direction: state.ascending ? "asc" : "desc", ...selectionQuery(selection)
     });
     if (includeClient) {
@@ -332,7 +335,7 @@
       if (!force && range.start === state.requestedStart && range.end === state.requestedEnd) return;
       state.requestedStart = range.start; state.requestedEnd = range.end;
       if (state.historical) scheduleHistoricalRequest(true);
-      else requestViewport(range.start, range.end);
+      else { renderLiveTable(); requestViewport(range.start, range.end); }
     };
     if (immediate) update();
     else if (throttle) {
@@ -432,11 +435,12 @@
     const seen = new Set();
 
     const upsert = (index, process, transient) => {
-      seen.add(process.pid);
-      let view = state.rowViews.get(process.pid);
+      process.key ||= `host:${process.pid}`;
+      seen.add(process.key);
+      let view = state.rowViews.get(process.key);
       if (!view) {
         view = new ProcessRowView(process, index, animate);
-        state.rowViews.set(process.pid, view);
+        state.rowViews.set(process.key, view);
       } else {
         view.transient = false; view.element.classList.remove("departing");
         view.update(process, index); view.move(index, process.previousIndex, animate, false);
@@ -462,19 +466,46 @@
     resolvePendingSelection();
   }
 
+  function renderLiveTable() {
+    if (state.historical || !state.liveFrame) return;
+    const frame = state.liveFrame;
+    const containers = window.topEnvironments?.containerRows(state.selection.duration) || [];
+    const query = state.search.toLocaleLowerCase();
+    const rows = [...frame.entries.map(process => ({ ...process, key: `host:${process.pid}` })), ...containers]
+      .filter(process => [process.command, process.user, process.pid, process.environment?.environment,
+        (!process.environment && window.topEnvironments?.lookup(process.pid)?.environment)].join(" ").toLocaleLowerCase().includes(query));
+    const field = { cpu: "cpu", memory: "memoryKB", time: "cpuTimeMS", cputime: "cpuTimeMS", cpuTime: "cpuTimeMS", pid: "pid", command: "command", user: "user" }[state.sort] || "cpu";
+    rows.sort((a, b) => {
+      const x = a[field], y = b[field];
+      const order = typeof x === "string" ? x.localeCompare(y) : (Number.isFinite(x) ? x : -1) - (Number.isFinite(y) ? y : -1);
+      return (state.ascending ? order : -order) || a.key.localeCompare(b.key);
+    });
+    state.total = rows.length;
+    const range = visibleRange();
+    applyTableFrame({ ...frame, windowStart: range.start, total: rows.length,
+      entries: rows.slice(range.start, range.end), additional: [] });
+    if (state.selectedPID && !rows.some(process => process.key === state.selectedPID)) clearProcessSelection();
+    state.displayMetrics = { ...frame.metrics, processCount: frame.metrics.processCount + containers.length,
+      visibleProcessCount: rows.length, threadCount: frame.metrics.threadCount + containers.reduce((sum, row) => sum + row.threads, 0) };
+    updateMetrics();
+    const error = window.topEnvironments?.error();
+    setConnection(error ? "error" : "live", error ? `Container discovery: ${error}` : "Live");
+  }
+
   function applyLiveFrame(frame) {
     state.liveMetrics = frame.metrics;
     if (!state.historical) state.displayMetrics = frame.metrics;
     addCPUHistorySample(frame);
     updateMetrics(); chart.render();
-    if (!state.historical) applyTableFrame(frame);
+    state.liveFrame = frame;
+    if (!state.historical) renderLiveTable();
   }
 
   function applyHistoricalFrame(frame) {
     if (!state.historical) return;
     state.displayMetrics = frame.metrics;
     applyTableFrame(frame); updateMetrics();
-    setConnection("", "Viewing historical data");
+    setConnection("", "Host history — container rows are live-only");
   }
 
   async function loadCPUHistory() {
@@ -812,7 +843,7 @@
     const previous = state.selectedPID;
     state.pendingSelectionIndex = null;
     if (previous === null) return;
-    state.selectedPID = null; state.selectedName = "";
+    state.selectedPID = null; state.selectedName = ""; state.selectedProcess = null;
     elements.stop.disabled = true; elements.inspect.disabled = true;
     const previousView = state.rowViews.get(previous);
     previousView?.update(previousView.process, previousView.index);
@@ -873,15 +904,26 @@
 
   async function inspectSelected() {
     if (!state.selectedPID) return;
-    const pid = state.selectedPID;
+    const key = state.selectedPID;
+    const selected = state.selectedProcess || state.rowViews.get(key)?.process;
+    if (!selected) return;
+    const pid = selected.pid;
     elements.detailTitle.textContent = state.selectedName || `PID ${pid}`;
     elements.detailBody.innerHTML = '<p class="loading">Loading process details…</p>';
     elements.drawerScrim.hidden = false; elements.drawer.classList.add("open"); elements.drawer.setAttribute("aria-hidden", "false");
     state.detailController?.abort(); const controller = new AbortController(); state.detailController = controller;
+    if (selected.environment) {
+      const process = selected.environment;
+      renderProcessDetail({ pid: process.pid, parentPID: process.parentPID, user: process.user,
+        threadCount: process.threads, cpuPercent: selected.cpu, cpuTimeMilliseconds: selected.cpuTimeMS,
+        memoryKilobytes: selected.memoryKB, virtualMemoryKilobytes: NaN, command: process.command,
+        environment: process, openFilesError: "Open-file inspection is not available for container processes." });
+      return;
+    }
     try {
       const response = await fetch(`/api/processes/${pid}`, { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error((await response.text()).trim() || `Request failed (${response.status})`);
-      const payload = decodeTopProcessDetail(await response.arrayBuffer()); if (state.selectedPID === pid) renderProcessDetail(payload.process);
+      const payload = decodeTopProcessDetail(await response.arrayBuffer()); if (state.selectedPID === key) renderProcessDetail(payload.process);
     } catch (error) {
       if (error.name !== "AbortError") elements.detailBody.textContent = error.message || "Could not load process details.";
     }
@@ -897,7 +939,7 @@
       ["Virtual memory", formatMemory(process.virtualMemoryKilobytes)], ["Launched", process.launchTime || "—"],
       ["Parent", process.parentShortCommand || "—"], ["Command line", process.commandLine || process.command, true]
     ];
-    const environment = window.topEnvironments?.lookup(process.pid);
+    const environment = process.environment || window.topEnvironments?.lookup(process.pid);
     if (environment) {
       details.unshift(["Container", environment.environment], ["Container PID", String(environment.pid)],
         ["Container user", environment.user]);
@@ -927,11 +969,14 @@
   }
 
   async function signalSelected(force) {
-    const pid = state.selectedPID; if (!pid) return;
+    const process = state.selectedProcess; if (!process) return;
+    const environment = process.environment;
     try {
-      const response = await fetch(`/api/processes/${force ? "force-quit" : "quit"}?pid=${encodeURIComponent(pid)}`, { cache: "no-store" });
+      const query = environment ? new URLSearchParams({ target: environment.target, pid: String(environment.pid), start: environment.start, force: force ? "1" : "0" }) : null;
+      const url = environment ? `/api/environments/signal?${query}` : `/api/processes/${force ? "force-quit" : "quit"}?pid=${encodeURIComponent(process.pid)}`;
+      const response = await fetch(url, { method: environment ? "POST" : "GET", cache: "no-store" });
       if (!response.ok) throw new Error((await response.text()).trim() || `Request failed (${response.status})`);
-    } catch (error) { window.alert(`Could not stop ${state.selectedName || `PID ${pid}`}: ${error.message}`); }
+    } catch (error) { window.alert(`Could not stop ${state.selectedName || `PID ${process.pid}`}: ${error.message}`); }
   }
 
   function resetQuery() {
@@ -977,12 +1022,12 @@
   }).observe(elements.viewport);
 
   elements.rows.addEventListener("click", event => {
-    const row = event.target.closest(".process-row"); if (row) selectProcess(Number(row.dataset.pid), row.dataset.name || "");
+    const row = event.target.closest(".process-row"); if (row) selectProcess(row.dataset.pid, row.dataset.name || "");
     if (row) elements.viewport.focus({ preventScroll: true });
   });
   elements.rows.addEventListener("dblclick", event => {
     const row = event.target.closest(".process-row");
-    if (row) { selectProcess(Number(row.dataset.pid), row.dataset.name || ""); inspectSelected(); }
+    if (row) { selectProcess(row.dataset.pid, row.dataset.name || ""); inspectSelected(); }
   });
   document.addEventListener("click", event => {
     if (!(event.target instanceof Element)) return;
@@ -1034,6 +1079,7 @@
   });
 
   window.addEventListener("top-environments-changed", () => {
+    renderLiveTable();
     for (const view of state.rowViews.values()) view.updateEnvironment();
   });
 

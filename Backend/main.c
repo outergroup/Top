@@ -4854,6 +4854,22 @@ static void process_client_request(StreamClient *client) {
         query++;
     }
 
+    if (strcmp(target, "/api/environments/signal") == 0) {
+        char environment[512], pid_text[32], start[128], force[8], error[1024];
+        if (strcasecmp(method, "POST") ||
+            !copy_query_value(query, "target", environment, sizeof(environment)) ||
+            !copy_query_value(query, "pid", pid_text, sizeof(pid_text)) ||
+            !copy_query_value(query, "start", start, sizeof(start))) {
+            queue_plain_text_response(client, 400, "Expected POST with target, pid and start.\n", true); return;
+        }
+        char *end; unsigned long pid = strtoul(pid_text, &end, 10);
+        if (!*pid_text || *end || !pid || pid > INT_MAX) {
+            queue_plain_text_response(client, 400, "Invalid PID.\n", true); return;
+        }
+        bool force_quit = copy_query_value(query, "force", force, sizeof(force)) && !strcmp(force, "1");
+        bool ok = environment_signal(environment, (uint32_t)pid, start, force_quit, error, sizeof(error));
+        queue_plain_text_response(client, ok ? 200 : 409, ok ? "Process signaled.\n" : error, true); return;
+    }
     if (strcmp(target, "/api/environments") == 0) {
         if (strcasecmp(method, "GET") != 0 || !query || strcmp(query, "operation=processes")) {
             queue_plain_text_response(client, 400, "expected GET operation=processes\n", true);

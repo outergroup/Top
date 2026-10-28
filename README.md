@@ -185,3 +185,14 @@ with `Top.app` for localhost macOS installs plus `RemoteLinuxBinaries`,
 top-level Linux content bundles, browser assets, and the app icon to
 `build/release/Top.tar.gz`. Deployment-specific publishing should live outside
 this repository.
+
+### Container runtime adapters
+
+Registered Docker, Apple Container and `wslc` targets use explicit runtime argv
+adapters. The helper protocol remains binary and the same app-owned helper can
+run in either Linux container runtime. Root macOS backends enter the owning
+user's launchd session before invoking Apple Container. Helper image builds accept
+`OUTER_BUILD_CONTAINER_RUNTIME=container|docker` and auto-detect an available
+builder. `Scripts/test_runtime_command.c` tests the command contract, including
+`wslc.exe`; Windows still needs native process transport integration and live
+validation. `wslc` is not treated as a `wsl.exe` distribution.
