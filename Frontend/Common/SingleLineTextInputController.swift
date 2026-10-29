@@ -2,14 +2,65 @@ import Foundation
 import AppKit
 import CoreText
 
+@MainActor
 protocol SingleLineTextInputControllerDelegate: AnyObject {
     func textInputControllerDidChangeState()
 }
 
+@MainActor
 final class SingleLineTextInputController<DelegateClass: SingleLineTextInputControllerDelegate> {
     let identifier: UUID
     weak var delegate: DelegateClass?
     var onSubmit: (() -> Void)?
+
+    private var undoHistory = TextUndoHistory()
+    private var savedHistories: [String: (String, TextUndoHistory)] = [:]
+    private var historyKey: String?
+
+    var markedRange: Range<Int>? { markedTextRange }
+
+    private var undoSelection: TextEditSelection {
+        TextEditSelection(caret: stringIndex(forCharacterIndex: cursorPosition).utf16Offset(in: text),
+                          anchor: selectionAnchor.map { stringIndex(forCharacterIndex: $0).utf16Offset(in: text) })
+    }
+
+    func breakUndoCoalescing() {
+        undoHistory.finishComposition(text: text, selection: undoSelection)
+        undoHistory.breakCoalescing()
+        markedTextRange = nil
+        pendingMarkedTextRange = nil
+    }
+
+    func resetUndoHistory() {
+        undoHistory.reset()
+        savedHistories.removeAll()
+        historyKey = nil
+    }
+
+    func setText(_ newText: String, historyKey key: String) {
+        breakUndoCoalescing()
+        if let historyKey { savedHistories[historyKey] = (text, undoHistory) }
+        let history = savedHistories[key]
+        setText(newText)
+        undoHistory = history.flatMap { $0.0.utf16.elementsEqual(newText.utf16) ? $0.1 : nil } ?? TextUndoHistory()
+        historyKey = key
+    }
+
+    func pasteText(_ value: String) {
+        guard isFocused else { return }
+        breakUndoCoalescing()
+        replaceText(range: selectionRange ?? cursorPosition..<cursorPosition, with: value, kind: .paste)
+        breakUndoCoalescing()
+    }
+
+    private func applyUndo(redo: Bool) {
+        breakUndoCoalescing()
+        guard let result = redo ? undoHistory.redo(text: text) : undoHistory.undo(text: text) else { return }
+        text = result.text
+        cursorPosition = characterIndexForUTF16(result.selection.caret)
+        selectionAnchor = result.selection.anchor.map { characterIndexForUTF16($0) }
+        notifyStateChanged()
+    }
 
     private(set) var text: String
     private(set) var cursorPosition: Int
@@ -62,6 +113,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
 
     func blur() {
         guard isFocused else { return }
+        breakUndoCoalescing()
         isFocused = false
         selectionAnchor = nil
         markedTextRange = nil
@@ -70,6 +122,8 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
     }
 
     func setText(_ newText: String) {
+        undoHistory = TextUndoHistory()
+        historyKey = nil
         text = newText
         cursorPosition = min(cursorPosition, text.count)
         selectionAnchor = nil
@@ -78,60 +132,49 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
         notifyStateChanged()
     }
 
-    func insertText(_ value: String) {
+    func insertText(_ value: String, replacementRange: Range<Int>? = nil) {
         guard isFocused else { return }
-
-        if value == "\u{8}" {
-            deleteBackward()
-            return
-        } else if value == "\u{7f}" {
-            deleteForward()
-            return
-        } else if value == "\u{2190}" {
-            moveCursorLeft()
-            return
-        } else if value == "\u{2192}" {
-            moveCursorRight()
-            return
-        } else if value == "\n" || value == "\r" {
-            onSubmit?()
+        if let replacementRange {
+            replaceText(range: replacementRange, with: value)
             return
         }
-
-        if let range = markedTextRange ?? pendingMarkedTextRange {
-            replaceText(range: range, with: value)
-            return
+        switch value {
+        case "\u{8}": deleteBackward(); return
+        case "\u{7f}": deleteForward(); return
+        case "\u{2190}": moveCursorLeft(); return
+        case "\u{2192}": moveCursorRight(); return
+        case "\n", "\r":
+            breakUndoCoalescing(); onSubmit?(); return
+        default: break
         }
-
-        if hasSelection {
-            deleteSelection()
-        }
-
-        let index = stringIndex(forCharacterIndex: cursorPosition)
-        text.insert(contentsOf: value, at: index)
-        cursorPosition += value.count
-        selectionAnchor = nil
-        markedTextRange = nil
-        pendingMarkedTextRange = nil
-        notifyStateChanged()
+        let range = markedTextRange ?? pendingMarkedTextRange ?? selectionRange ?? cursorPosition..<cursorPosition
+        if value == "\t" { breakUndoCoalescing() }
+        replaceText(range: range, with: value, kind: .typing)
+        if value == "\t" { breakUndoCoalescing() }
     }
 
-    func replaceText(range: Range<Int>, with replacement: String) {
+    func replaceText(range: Range<Int>, with replacement: String, clearsMarkedText: Bool = true, kind: TextUndoHistory.Kind = .replacement) {
         guard isFocused else { return }
-        replaceText(range: range, with: replacement, clearsMarkedText: true)
-    }
-
-    private func replaceText(range: Range<Int>, with replacement: String, clearsMarkedText: Bool) {
         let lower = min(max(range.lowerBound, 0), text.count)
         let upper = min(max(range.upperBound, lower), text.count)
         let startIndex = stringIndex(forCharacterIndex: lower)
         let endIndex = stringIndex(forCharacterIndex: upper)
+        let utf16Range = NSRange(startIndex..<endIndex, in: text)
+        let removed = String(text[startIndex..<endIndex])
+        let before = undoSelection
+        let composing = undoHistory.isComposing
         text.replaceSubrange(startIndex..<endIndex, with: replacement)
-        cursorPosition = lower + replacement.count
+        cursorPosition = characterIndexForUTF16(utf16Range.location + replacement.utf16.count)
         selectionAnchor = nil
         if clearsMarkedText {
             markedTextRange = nil
             pendingMarkedTextRange = nil
+        }
+        if composing {
+            if clearsMarkedText { undoHistory.finishComposition(text: text, selection: undoSelection) }
+        } else {
+            undoHistory.record(range: utf16Range, removed: removed, inserted: replacement,
+                               before: before, after: undoSelection, kind: kind)
         }
         notifyStateChanged()
     }
@@ -141,6 +184,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
                        selectedLength: Int,
                        replacementRange: Range<Int>?) {
         guard isFocused else { return }
+        undoHistory.beginComposition(text: text, selection: undoSelection)
         let range = normalizedRange(replacementRange)
             ?? markedTextRange
             ?? selectionRange
@@ -172,37 +216,26 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
 
     func deleteBackward() {
         guard isFocused else { return }
-        if hasSelection {
-            deleteSelection()
-            return
-        }
+        if hasSelection { deleteSelection(); return }
         guard cursorPosition > 0 else { return }
-        clearMarkedTextState()
-        let removeIndex = text.index(text.startIndex, offsetBy: cursorPosition - 1)
-        text.remove(at: removeIndex)
-        cursorPosition -= 1
-        selectionAnchor = nil
-        notifyStateChanged()
+        undoHistory.finishComposition(text: text, selection: undoSelection)
+        replaceText(range: (cursorPosition - 1)..<cursorPosition, with: "", kind: .backwardDelete)
     }
 
     func deleteForward() {
         guard isFocused else { return }
-        if hasSelection {
-            deleteSelection()
-            return
-        }
+        if hasSelection { deleteSelection(); return }
         guard cursorPosition < text.count else { return }
-        clearMarkedTextState()
-        let removeIndex = stringIndex(forCharacterIndex: cursorPosition)
-        text.remove(at: removeIndex)
-        selectionAnchor = nil
-        notifyStateChanged()
+        undoHistory.finishComposition(text: text, selection: undoSelection)
+        replaceText(range: cursorPosition..<(cursorPosition + 1), with: "", kind: .forwardDelete)
     }
 
     func performCommand(_ command: String) {
         guard isFocused else { return }
 
         switch command {
+        case "undo": applyUndo(redo: false)
+        case "redo": applyUndo(redo: true)
         case "moveLeft":
             moveCursorLeft()
         case "moveRight":
@@ -248,7 +281,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
         case "deleteToMark":
             deleteToBeginning()
         case "insertNewline":
-            onSubmit?()
+            breakUndoCoalescing(); onSubmit?()
         default:
             break
         }
@@ -295,6 +328,14 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
     }
 
     // MARK: - Private helpers
+
+    func cutSelectedTextContent() -> String? {
+        guard isFocused, let range = selectionRange, let selected = selectedTextContent() else { return nil }
+        breakUndoCoalescing()
+        replaceText(range: range, with: "", kind: .cut)
+        breakUndoCoalescing()
+        return selected
+    }
 
     private func moveCursorLeft() {
         clearMarkedTextState()
@@ -400,44 +441,24 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
 
     private func deleteSelection() {
         guard let range = selectionRange else { return }
-        clearMarkedTextState()
-        let startIndex = stringIndex(forCharacterIndex: range.lowerBound)
-        let endIndex = stringIndex(forCharacterIndex: range.upperBound)
-        text.removeSubrange(startIndex..<endIndex)
-        cursorPosition = range.lowerBound
-        selectionAnchor = nil
-        notifyStateChanged()
+        breakUndoCoalescing()
+        replaceText(range: range, with: "", kind: .delete)
     }
 
     private func deleteWordBackward() {
-        if hasSelection {
-            deleteSelection()
-            return
-        }
+        guard isFocused else { return }
+        if hasSelection { deleteSelection(); return }
         guard cursorPosition > 0 else { return }
-        clearMarkedTextState()
-        let boundary = findPreviousWordBoundary(from: cursorPosition)
-        let startIndex = stringIndex(forCharacterIndex: boundary)
-        let endIndex = stringIndex(forCharacterIndex: cursorPosition)
-        text.removeSubrange(startIndex..<endIndex)
-        cursorPosition = boundary
-        selectionAnchor = nil
-        notifyStateChanged()
+        undoHistory.finishComposition(text: text, selection: undoSelection)
+        replaceText(range: findPreviousWordBoundary(from: cursorPosition)..<cursorPosition, with: "", kind: .delete)
     }
 
     private func deleteWordForward() {
-        if hasSelection {
-            deleteSelection()
-            return
-        }
+        guard isFocused else { return }
+        if hasSelection { deleteSelection(); return }
         guard cursorPosition < text.count else { return }
-        clearMarkedTextState()
-        let boundary = findNextWordBoundary(from: cursorPosition)
-        let startIndex = stringIndex(forCharacterIndex: cursorPosition)
-        let endIndex = stringIndex(forCharacterIndex: boundary)
-        text.removeSubrange(startIndex..<endIndex)
-        selectionAnchor = nil
-        notifyStateChanged()
+        undoHistory.finishComposition(text: text, selection: undoSelection)
+        replaceText(range: cursorPosition..<findNextWordBoundary(from: cursorPosition), with: "", kind: .delete)
     }
 
     private func deleteToBeginning() {
@@ -448,10 +469,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
         guard cursorPosition > 0 else { return }
         clearMarkedTextState()
         let endIndex = stringIndex(forCharacterIndex: cursorPosition)
-        text.removeSubrange(text.startIndex..<endIndex)
-        cursorPosition = 0
-        selectionAnchor = nil
-        notifyStateChanged()
+        replaceText(range: 0..<text.distance(from: text.startIndex, to: endIndex), with: "", kind: .delete)
     }
 
     private func deleteToEnd() {
@@ -462,9 +480,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
         guard cursorPosition < text.count else { return }
         clearMarkedTextState()
         let startIndex = stringIndex(forCharacterIndex: cursorPosition)
-        text.removeSubrange(startIndex..<text.endIndex)
-        selectionAnchor = nil
-        notifyStateChanged()
+        replaceText(range: text.distance(from: text.startIndex, to: startIndex)..<text.count, with: "", kind: .delete)
     }
 
     private func extendSelection(to position: Int) {
@@ -543,8 +559,7 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
     }
 
     private func clearMarkedTextState() {
-        markedTextRange = nil
-        pendingMarkedTextRange = nil
+        breakUndoCoalescing()
     }
 
     private func characterIndexForUTF16(_ utf16Index: Int) -> Int {
@@ -558,7 +573,10 @@ final class SingleLineTextInputController<DelegateClass: SingleLineTextInputCont
     }
 
     func enabledEditCommands(in requestedCommands: OuterframeEditCommandSet) -> OuterframeEditCommandSet {
+        guard isFocused else { return [] }
         var enabledCommands: OuterframeEditCommandSet = []
+        if requestedCommands.contains(.undo), undoHistory.canUndo || undoHistory.isComposing { enabledCommands.insert(.undo) }
+        if requestedCommands.contains(.redo), undoHistory.canRedo && !undoHistory.isComposing { enabledCommands.insert(.redo) }
 
         if isFocused && hasSelection {
             if requestedCommands.contains(.copy) {

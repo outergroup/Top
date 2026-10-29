@@ -61,6 +61,7 @@
 				Vendor/OuterframeSwiftMethods/OuterframeAccessibility.swift,
 				Vendor/OuterframeSwiftMethods/OuterframeHost.swift,
 				Vendor/OuterframeSwiftMethods/SocketToBrowser.swift,
+				Vendor/TextEditing/TextUndoHistory.swift,
 			);
 			target = 37630D902F495DDD000075B1 /* Top */;
 		};

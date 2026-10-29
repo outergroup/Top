@@ -867,7 +867,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     func pasteboardItemsForCut() -> [OuterframeContentPasteboardItem] {
         let items = pasteboardItemsForCopy()
         if !items.isEmpty {
-            searchFieldInputController.deleteBackward()
+            _ = searchFieldInputController.cutSelectedTextContent()
         }
         return items
     }
@@ -3841,6 +3841,7 @@ extension ProcessMonitorListContentController: OuterframeHostDelegate {
                               modifySelection: modifySelection)
 
         case .windowActiveUpdate(let isActive):
+            if !isActive { searchFieldInputController.breakUndoCoalescing() }
             setWindowActive(isActive)
 
         case .selectionToPasteboardCopyRequest(let requestID):
