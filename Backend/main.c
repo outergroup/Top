@@ -62,6 +62,8 @@ extern int launch_activate_socket(const char *name, int **fds, size_t *cnt);
 #define MAX_QUERY_VALUE_LEN 768
 #define MAX_PROCESS_USER_LEN 64
 #define MAX_PROCESS_COMMAND_LEN 256
+
+#include "OuterLoopProcessLabels.h"
 #define DEFAULT_WINDOW_SIZE 40
 #define DEFAULT_TIME_WINDOW_SEC 10.0
 #define MIN_TIME_WINDOW_SEC 0.5
@@ -1179,6 +1181,7 @@ static int collect_process_records(ProcessRecord **records_out,
         elapsed_ticks = sample_ticks - previous_ticks;
     }
 
+    outer_loop_reload_labels();
     int pid_list_size = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
     if (pid_list_size <= 0) {
         free(slot_seen);
@@ -1253,14 +1256,16 @@ static int collect_process_records(ProcessRecord **records_out,
                                                          history_count,
                                                          elapsed_ticks);
 
-        if (!slot->identity) {
+        char current_command[MAX_PROCESS_COMMAND_LEN] = {0};
+        if (!read_process_short_command(pid, current_command, sizeof(current_command))) {
+            snprintf(current_command, sizeof(current_command), "%s", info.pbsd.pbi_comm);
+        }
+        if (!slot->identity || strcmp(slot->identity->command, current_command)) {
             char user[MAX_PROCESS_USER_LEN] = {0};
             char command[MAX_PROCESS_COMMAND_LEN] = {0};
             resolve_username(info.pbsd.pbi_uid, user, sizeof(user));
-            if (!read_process_short_command(pid, command, sizeof(command))) {
-                strncpy(command, info.pbsd.pbi_comm, sizeof(command) - 1);
-                command[sizeof(command) - 1] = '\0';
-            }
+            snprintf(command, sizeof(command), "%s", current_command);
+            release_process_identity(slot->identity);
             slot->identity = create_process_identity(pid, false, user, command);
             if (!slot->identity) {
                 release_process_record_identities(records, (size_t)used);
@@ -1923,16 +1928,77 @@ static bool read_process_launch_time(int pid, char *out, size_t out_size) {
     return true;
 }
 
+static bool outerframe_app_name_from_arguments(const char *buffer, size_t size,
+                                               char *out, size_t out_size) {
+    if (size < sizeof(int) || out_size == 0) {
+        return false;
+    }
+    int argument_count;
+    memcpy(&argument_count, buffer, sizeof(argument_count));
+    if (argument_count < 3) {
+        return false;
+    }
+    const char *cursor = buffer + sizeof(argument_count);
+    const char *end = buffer + size;
+    const char *terminator = memchr(cursor, '\0', (size_t)(end - cursor));
+    if (!terminator) {
+        return false;
+    }
+    cursor = terminator + 1;
+    while (cursor < end && *cursor == '\0') {
+        cursor++;
+    }
+    bool expects_app_name = false;
+    for (int index = 0; index < argument_count && cursor < end; index++) {
+        terminator = memchr(cursor, '\0', (size_t)(end - cursor));
+        if (!terminator) {
+            return false;
+        }
+        if (expects_app_name) {
+            if (cursor == terminator) {
+                return false;
+            }
+            snprintf(out, out_size, "OuterframeContent: %s", cursor);
+            return true;
+        }
+        expects_app_name = index > 0 && strcmp(cursor, "--app-name") == 0;
+        cursor = terminator + 1;
+    }
+    return false;
+}
+
+static bool read_outerframe_app_name(int pid, char *out, size_t out_size) {
+    int argument_max = 0;
+    size_t size = sizeof(argument_max);
+    if (sysctlbyname("kern.argmax", &argument_max, &size, NULL, 0) != 0 || argument_max <= 0) {
+        return false;
+    }
+    char *buffer = malloc((size_t)argument_max);
+    if (!buffer) {
+        return false;
+    }
+    int mib[] = { CTL_KERN, KERN_PROCARGS2, pid };
+    size = (size_t)argument_max;
+    bool found = sysctl(mib, 3, buffer, &size, NULL, 0) == 0 &&
+        outerframe_app_name_from_arguments(buffer, size, out, out_size);
+    free(buffer);
+    return found;
+}
+
 static bool read_process_short_command(int pid, char *out, size_t out_size) {
     if (pid <= 0 || !out || out_size == 0) {
         return false;
     }
+    if (outer_loop_process_label(pid, out, out_size)) return true;
     char buffer[PROC_PIDPATHINFO_MAXSIZE];
     int len = proc_name(pid, buffer, sizeof(buffer));
     if (len <= 0) {
         return false;
     }
     buffer[sizeof(buffer) - 1] = '\0';
+    if (strcmp(buffer, "OuterframeContent") == 0 && read_outerframe_app_name(pid, out, out_size)) {
+        return true;
+    }
     strncpy(out, buffer, out_size - 1);
     out[out_size - 1] = '\0';
     return true;
