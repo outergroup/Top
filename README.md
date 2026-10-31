@@ -196,3 +196,9 @@ user's launchd session before invoking Apple Container. Helper image builds acce
 builder. `Scripts/test_runtime_command.c` tests the command contract, including
 `wslc.exe`; Windows still needs native process transport integration and live
 validation. `wslc` is not treated as a `wsl.exe` distribution.
+
+## Process memory
+
+On macOS, the Memory column shows physical footprint, matching Activity Monitor’s
+Memory metric. Resident memory remains available in process details. On Linux,
+including container processes, Memory continues to show resident memory.

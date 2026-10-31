@@ -26,6 +26,7 @@ private struct ProcessDetailResponse {
         let shortCommand: String?
         let openFiles: [DetailOpenFileEntry]?
         let openFilesError: String?
+        var residentMemoryKilobytes: Int? = nil
     }
 
     let timestamp: Double?
@@ -33,7 +34,7 @@ private struct ProcessDetailResponse {
     init(_ data: Data) throws {
         let reader = try TopBinaryReader(data, magic: "OTPD", minimum: 144)
         let count = try reader.u32(12), variable = try reader.u32(24), flags = try reader.u32(28)
-        guard try reader.u32(16) == 24, try reader.u32(20) == 144, try reader.u32(84) == 0, try reader.u64(136) == 0,
+        guard try reader.u32(16) == 24, try reader.u32(20) == 144, try reader.u32(84) == 0,
               flags <= 1, variable <= data.count, variable == 144 + count * 24,
               try reader.u32(40) > 0 else { throw TopBinaryReader.Failure.invalidPayload }
         let files = try (0..<count).map { index in
@@ -50,11 +51,11 @@ private struct ProcessDetailResponse {
         let threads = try reader.u32(80)
         process = try Process(pid: reader.u32(40), parentPID: reader.u32(44),
             parentShortCommand: optionalText(112), cpuPercent: reader.number(48),
-            memoryKilobytes: reader.integer(56), virtualMemoryKilobytes: reader.integer(64),
+            memoryKilobytes: reader.u64(136) == 0 ? reader.integer(56) : reader.integer(136), virtualMemoryKilobytes: reader.integer(64),
             cpuTimeMilliseconds: reader.integer(72), isKernelThread: flags == 1,
             user: reader.string(88, variable: variable), threadCount: threads == 0 ? nil : threads,
             launchTime: optionalText(120), command: reader.string(96, variable: variable),
-            shortCommand: reader.string(104, variable: variable), openFiles: files, openFilesError: optionalText(128))
+            shortCommand: reader.string(104, variable: variable), openFiles: files, openFilesError: optionalText(128), residentMemoryKilobytes: reader.integer(56))
     }
 }
 
@@ -74,6 +75,7 @@ private struct ProcessDetailSnapshot {
     let shortCommand: String?
     let openFiles: [DetailOpenFileEntry]
     let openFilesError: String?
+    var residentMemoryKilobytes: Int? = nil
 }
 
 private struct ProcessDetailConfig {
@@ -95,6 +97,7 @@ private enum DetailMetric: CaseIterable {
     case cpuPercent
     case cpuTime
     case memory
+    case residentMemory
     case parent
     case threads
     case launched
@@ -155,6 +158,8 @@ private func label(for metric: DetailMetric) -> String {
         return "CPU Time"
     case .memory:
         return "Memory"
+    case .residentMemory:
+        return "Resident memory"
     case .parent:
         return "Parent"
     case .threads:
@@ -970,7 +975,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             cpuTimeMilliseconds: process.cpuTimeMilliseconds, isKernelThread: process.isKernelThread ?? false,
             user: process.user, threadCount: process.threadCount, launchTime: process.launchTime,
             command: process.command, shortCommand: process.shortCommand,
-            openFiles: process.openFiles ?? [], openFilesError: process.openFilesError)
+            openFiles: process.openFiles ?? [], openFilesError: process.openFilesError, residentMemoryKilobytes: process.residentMemoryKilobytes)
         endpointSpecifier = "/api/processes"
         ensureEndpointAvailable()
         self.detailConfig = detailConfig
@@ -1155,6 +1160,12 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             setDetailMetric(.memory, value: formattedMemory(kilobytes: memory, isKernelThread: isKernelThread))
         } else {
             setDetailMetric(.memory, value: "—")
+        }
+
+        if let resident = snapshot?.residentMemoryKilobytes {
+            setDetailMetric(.residentMemory, value: formattedMemory(kilobytes: resident, isKernelThread: isKernelThread))
+        } else {
+            setDetailMetric(.residentMemory, value: "—")
         }
 
         if let parentCommand = snapshot?.parentShortCommand, let parentPID = snapshot?.parentPID {
@@ -1445,7 +1456,8 @@ final class ProcessDetailContentController: NSObject, TopContentController {
                     command: process.command,
                     shortCommand: process.shortCommand,
                     openFiles: process.openFiles ?? [],
-                    openFilesError: process.openFilesError
+                    openFilesError: process.openFilesError,
+                    residentMemoryKilobytes: process.residentMemoryKilobytes
                 )
 
                 self.currentDetailSnapshot = snapshot

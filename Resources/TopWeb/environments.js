@@ -191,8 +191,8 @@ function decodeTopCPUHistory(buffer) {
 function decodeTopProcessDetail(buffer) {
   const r = topBinaryReader(buffer, "OTPD", 144), count = r.u32(12), variable = r.u32(24), flags = r.u32(28);
   if (r.u32(16) !== 24 || r.u32(20) !== 144 || variable !== 144 + count * 24 || variable > buffer.byteLength ||
-      flags > 1 || r.u32(84) || r.u64(136) || !r.u32(40)) throw new Error("Invalid Top detail records");
-  const process = {pid: r.u32(40), parentPID: r.u32(44), cpuPercent: r.number(48), memoryKilobytes: r.u64(56),
+      flags > 1 || r.u32(84) || !r.u32(40)) throw new Error("Invalid Top detail records");
+  const process = {pid: r.u32(40), parentPID: r.u32(44), cpuPercent: r.number(48), memoryKilobytes: r.u64(136) || r.u64(56), residentMemoryKilobytes: r.u64(56),
     virtualMemoryKilobytes: r.u64(64), cpuTimeMilliseconds: r.u64(72), threadCount: r.u32(80) || null,
     isKernelThread: flags === 1, user: r.text(88, variable), command: r.text(96, variable),
     shortCommand: r.text(104, variable), parentShortCommand: r.text(112, variable) || null,

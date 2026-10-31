@@ -935,7 +935,8 @@
     const details = [
       ["PID", String(process.pid ?? "—")], ["Parent PID", String(process.parentPID ?? "—")], ["User", process.user],
       ["Threads", String(process.threadCount ?? "—")], ["CPU", `${formatDecimal(process.cpuPercent, 1)}%`],
-      ["CPU time", formatCPUTime(process.cpuTimeMilliseconds)], ["Resident memory", formatMemory(process.memoryKilobytes)],
+      ["CPU time", formatCPUTime(process.cpuTimeMilliseconds)], ["Memory", formatMemory(process.memoryKilobytes)],
+      ["Resident memory", formatMemory(process.residentMemoryKilobytes ?? process.memoryKilobytes)],
       ["Virtual memory", formatMemory(process.virtualMemoryKilobytes)], ["Launched", process.launchTime || "—"],
       ["Parent", process.parentShortCommand || "—"], ["Command line", process.commandLine || process.command, true]
     ];

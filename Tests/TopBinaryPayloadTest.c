@@ -9,7 +9,7 @@ static void save_fixture(const char *directory, const char *name, const char *by
 int main(int argc, char **argv) {
     assert(argc == 2);
     char buffer[DETAIL_BUFFER_SIZE];
-    ProcessDetail detail = {.pid = 123, .parent_pid = 45, .cpu_percent = 12.5, .rss_kb = 12345,
+    ProcessDetail detail = {.pid = 123, .parent_pid = 45, .cpu_percent = 12.5, .rss_kb = 12345, .footprint_kb = 5432,
         .vsz_kb = 98765, .cpu_time_ms = 6789, .thread_count = 3, .is_kernel_thread = true};
     strcpy(detail.user, "café"); strcpy(detail.command, "runner \"雪\"\n--test");
     strcpy(detail.short_command, "runner"); strcpy(detail.parent_short_command, "parent");

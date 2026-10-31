@@ -11,6 +11,7 @@ with tempfile.TemporaryDirectory(prefix='top-binary-') as temporary:
 let root = URL(fileURLWithPath: CommandLine.arguments[1])
 let data = try Data(contentsOf: root.appendingPathComponent("detail.bin"))
 private let detail = try ProcessDetailResponse(data)
+assert(detail.process.memoryKilobytes == 5432 && detail.process.residentMemoryKilobytes == 12345)
 assert(detail.process.pid == 123 && detail.process.isKernelThread == true)
 assert(detail.process.command == "runner \\"雪\\"\\n--test")
 assert(detail.process.openFiles?.first?.name == "/tmp/雪 café\\n\\"file\\"")

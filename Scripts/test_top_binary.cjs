@@ -4,6 +4,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../Resources/TopWeb/environ
 const bytes = name => fs.readFileSync(path.join(process.argv[2],name));
 const decode = (name,data) => context[name](Uint8Array.from(data).buffer);
 const detail = decode('decodeTopProcessDetail',bytes('detail.bin')).process;
+assert.equal(detail.memoryKilobytes,5432);assert.equal(detail.residentMemoryKilobytes,12345);
 assert.equal(detail.pid,123);assert.equal(detail.command,'runner "雪"\n--test');assert.equal(detail.cpuPercent,12.5);
 assert.equal(detail.openFiles[0].name,'/tmp/雪 café\n"file"');assert.equal(detail.openFilesError,'Some files unavailable');
 const samples=decode('decodeTopCPUHistory',bytes('history.bin')).samples;

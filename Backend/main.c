@@ -182,6 +182,7 @@ typedef struct {
     int parent_pid;
     double cpu_percent;
     long rss_kb;
+    uint64_t footprint_kb;
     long vsz_kb;
     long cpu_time_ms;
     bool is_kernel_thread;
@@ -1244,7 +1245,10 @@ static int collect_process_records(ProcessRecord **records_out,
         memset(record, 0, sizeof(*record));
         record->slot = slot_index;
         record->slot_generation = slot->generation;
-        record->memory_kb = (long)(info.ptinfo.pti_resident_size / 1024);
+        struct rusage_info_v0 usage = {0};
+        if (proc_pid_rusage(pid, RUSAGE_INFO_V0, (rusage_info_t *)&usage) == 0) {
+            record->memory_kb = (long)(usage.ri_phys_footprint / 1024);
+        }
         uint64_t total_time_ticks = (uint64_t)info.ptinfo.pti_total_user + (uint64_t)info.ptinfo.pti_total_system;
         record->total_cpu_time_ticks = total_time_ticks;
         record->sample_cpu_time_ms = (long)(ticks_to_seconds(total_time_ticks) * 1000.0);
@@ -3966,6 +3970,12 @@ static bool fetch_process_detail(int pid,
         return false;
     }
 
+#ifdef __APPLE__
+    struct rusage_info_v0 usage = {0};
+    if (proc_pid_rusage(pid, RUSAGE_INFO_V0, (rusage_info_t *)&usage) == 0) {
+        detail.footprint_kb = usage.ri_phys_footprint / 1024;
+    }
+#endif
     detail.cpu_time_ms = parse_cpu_time_ms(time_buf);
     strncpy(detail.user, user_buf, sizeof(detail.user) - 1);
 #ifdef __linux__
@@ -4088,6 +4098,7 @@ static size_t encode_process_detail(const ProcessDetail *detail, const OpenFileE
     top_put_u32(buffer + 28, detail->is_kernel_thread ? 1 : 0);
     top_put_double(buffer + 32, current_time_seconds()); top_put_u32(buffer + 40, (uint32_t)detail->pid);
     top_put_u32(buffer + 44, (uint32_t)detail->parent_pid); top_put_double(buffer + 48, detail->cpu_percent);
+    top_put_u64(buffer + 136, detail->footprint_kb);
     top_put_u64(buffer + 56, (uint64_t)detail->rss_kb); top_put_u64(buffer + 64, (uint64_t)detail->vsz_kb);
     top_put_u64(buffer + 72, (uint64_t)detail->cpu_time_ms); top_put_u32(buffer + 80, detail->thread_count > 0 ? (uint32_t)detail->thread_count : 0);
     const char *fields[] = {detail->user, detail->command, detail->short_command, detail->parent_short_command, detail->launch_time, error};
