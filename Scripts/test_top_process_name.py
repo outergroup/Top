@@ -12,3 +12,11 @@ with tempfile.TemporaryDirectory(prefix='top-process-name-') as directory:
         '-framework', 'CoreFoundation', '-lpthread', '-lm', '-o', str(executable),
     ], check=True)
     subprocess.run([str(executable), '--app-name', 'Test App 雪'], check=True)
+    for name in [
+        'com.apple.Virtualization.VirtualMachine',
+        'Long process 雪 ' + 'x' * 180,
+    ]:
+        renamed = pathlib.Path(directory) / name
+        executable.rename(renamed)
+        executable = renamed
+        subprocess.run([str(executable), '--expected-name', name], check=True)

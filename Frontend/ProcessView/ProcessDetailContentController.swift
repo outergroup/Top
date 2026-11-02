@@ -234,6 +234,18 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     private var appletOriginURL: URL?
     private var appletBaseURL: URL?
     private var appletOuterURL: URL?
+    private var transportRowID: Int? {
+        guard let url = outerframeHost.pluginURL(),
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: true)?.queryItems,
+              let value = items.first(where: { $0.name == "rowId" })?.value,
+              let id = Int(value), id > 0 else { return nil }
+        return id
+    }
+    private var containerIdentity: [URLQueryItem] {
+        guard let url = outerframeHost.pluginURL(), let items = URLComponents(url: url, resolvingAgainstBaseURL: true)?.queryItems,
+              items.contains(where: { $0.name == "target" }) else { return [] }
+        return items.filter { $0.name == "target" || $0.name == "start" }
+    }
     private var apiEndpoint: URL?
     private var detailAPIEndpoint: URL?
     private var endpointSpecifier: String?
@@ -966,7 +978,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
             return
         }
         let process = response.process
-        let detailConfig = ProcessDetailConfig(pid: process.pid, detailAPIPath: "/api/processes/\(process.pid)",
+        let detailConfig = ProcessDetailConfig(pid: process.pid, detailAPIPath: "/api/processes/\(transportRowID ?? process.pid)",
             listAPIPath: "/api/processes", parentPID: process.parentPID, parentCommand: process.parentShortCommand,
             command: process.shortCommand ?? process.command, isKernelThread: process.isKernelThread ?? false)
         pendingDetailSnapshot = ProcessDetailSnapshot(pid: process.pid, parentPID: process.parentPID,
@@ -1075,7 +1087,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     private func resolveDetailEndpoint(for config: ProcessDetailConfig) -> URL? {
         if let detailSpecifier = config.detailAPIPath,
            let resolved = resolveEndpoint(from: detailSpecifier) {
-            return resolved
+            return resolved.appending(queryItems: containerIdentity)
         }
 
         let defaultDetailPath = "\(defaultAPIPath)/\(config.pid)"
@@ -1356,6 +1368,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     }
 
     private func startStreamingIfPossible() {
+        if !containerIdentity.isEmpty || transportRowID != nil { startDetailPolling(); return }
         guard streamTask == nil else { return }
         guard let endpoint = apiEndpoint else {
             showStatus("Missing process endpoint.")
@@ -2568,11 +2581,11 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         }
 
         let actionPath = force ? "force-quit" : "quit"
-        let requestURL = endpoint
-            .appending(path: actionPath)
-            .appending(queryItems: [URLQueryItem(name: "pid", value: String(pid))])
+        let requestURL = containerIdentity.isEmpty ? endpoint.appending(path: actionPath)
+            .appending(queryItems: [.init(name: "pid", value: String(transportRowID ?? pid))]) : endpoint.deletingLastPathComponent()
+            .appending(path: "environments/signal").appending(queryItems: containerIdentity + [.init(name: "pid", value: String(pid)), .init(name: "force", value: force ? "1" : "0")])
         var request = URLRequest(url: requestURL)
-        request.httpMethod = "GET"
+        request.httpMethod = containerIdentity.isEmpty ? "GET" : "POST"
 
         performSingleRequest(request) { [weak self] data, response, error in
             Task { @MainActor [weak self] in

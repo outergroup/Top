@@ -125,6 +125,8 @@ button { border: 0; background: none; }
   min-height: 0; display: grid; grid-template-columns: minmax(150px, .24fr) minmax(260px, .52fr) minmax(140px, .24fr);
   gap: 24px; padding: 16px; border-top: 1px solid var(--separator); overflow: hidden;
 }
+html[data-containers-only="true"] .top-app { grid-template-rows: minmax(112px, 1fr); }
+.system-metrics[hidden] { display: none; }
 .cpu-stats h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
 .stat-row { height: 23px; display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; font-size: 13px; }
 .stat-value { justify-content: flex-start; font-variant-numeric: tabular-nums; }

@@ -202,3 +202,11 @@ validation. `wslc` is not treated as a `wsl.exe` distribution.
 On macOS, the Memory column shows physical footprint, matching Activity Monitor’s
 Memory metric. Resident memory remains available in process details. On Linux,
 including container processes, Memory continues to show resident memory.
+
+
+## Windows
+
+The Windows backend monitors registered Docker/WSLc containers only. It supports process details and identity-checked termination, with no Windows host process monitoring.
+Build and packaging are integrated in `../Backends/Windows/build.ps1`; install the
+app through Outer Shell’s Add Apps experience. The package includes HTML content
+and macOS native outerframe bundles.

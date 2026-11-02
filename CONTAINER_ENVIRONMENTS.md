@@ -2,7 +2,7 @@
 
 Top owns `outer-top-helper` in [Helper](Helper/README.md). The backend handles host operations directly and reuses long-running container helpers over stdin/stdout. Outer Shell supplies container discovery and installation, not an application-operation proxy.
 
-Container images must install `/usr/local/bin/outer-top-helper`. The bundled base images include each app's separate executable. Custom images can COPY the app's static helper directly. Release, deployment and development scripts build it from this app's Helper directory. The container process exits when its backend connection closes; it is not a separately managed daemon.
+The app ships its static helpers as `helpers/linux-x86_64/outer-top-helper` and `helpers/linux-aarch64/outer-top-helper` beside its `web` folder, and copies the helper into a container the first time it needs it, using Outer Shell's `ContainerHelper.h`; images Outer Shell builds with Docker include it already. Any container with `/bin/sh` works. Release, deployment and development scripts build the helpers from this app's Helper directory. The container process exits when its backend connection closes; it is not a separately managed daemon.
 
 The HTML frontend merges host stream rows with helper-only container rows, using container ID, PID, and process start identity for selection. Linux container processes already visible in the host snapshot are annotated instead of duplicated. Live search and sorting include container names. The CPU chart and historical table remain host-only; the historical status makes this explicit. Container inspection shows snapshot fields, while open-file inspection remains host-only.
 

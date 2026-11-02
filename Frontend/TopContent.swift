@@ -11,7 +11,7 @@ struct TopBinaryReader {
     let bytes: [UInt8]
     init(_ data: Data, magic: String, minimum: Int) throws {
         bytes = Array(data)
-        guard bytes.count >= minimum, bytes.count <= 512 * 1024,
+        guard bytes.count >= minimum, bytes.count <= 16 * 1024 * 1024,
               Array(bytes.prefix(4)) == Array(magic.utf8), try u32(4) == 1,
               try u32(8) == bytes.count else { throw Failure.invalidPayload }
     }
@@ -227,4 +227,51 @@ private final class TopInitHandler: NSObject, OuterframeHostDelegate {
 @MainActor
 protocol TopContentController: OuterframeHostDelegate {
     var outerframeHost: OuterframeHost { get }
+}
+
+struct TopContainerSnapshot: Sendable {
+    struct Process: Sendable {
+        let target: String
+        let container: String
+        let pid: Int
+        let start: String
+        let command: String
+        let user: String
+        let memory: Int
+        let ticks: UInt64
+        let threads: Int
+        var identity: String { "\(target):\(pid):\(start)" }
+    }
+    let timestamp: Double
+    let clockTicks: Double
+    let processes: [Process]
+    let errors: [String]
+
+    init(_ data: Data) throws {
+        let reader = try TopBinaryReader(data, magic: "OETP", minimum: 80)
+        let targetCount = try reader.u32(16), processCount = try reader.u32(28), errorCount = try reader.u32(40)
+        let processOffset = try reader.u32(32), errorOffset = try reader.u32(44), variable = try reader.u32(52)
+        guard try reader.u32(12) == 0, try reader.u32(20) == 80, try reader.u32(24) == 56,
+              try reader.u32(36) == 112, try reader.u32(48) == 16,
+              targetCount <= (data.count - 80) / 56, processOffset == 80 + targetCount * 56,
+              processCount <= (data.count - processOffset) / 112, errorOffset == processOffset + processCount * 112,
+              errorCount <= (data.count - errorOffset) / 16, variable == errorOffset + errorCount * 16,
+              try reader.u32(64) > 0 else { throw TopBinaryReader.Failure.invalidPayload }
+        let targets = try (0..<targetCount).map { index in
+            (try reader.string(80 + index * 56, variable: variable), try reader.string(104 + index * 56, variable: variable))
+        }
+        timestamp = Double(try reader.u64(56)) / 1000
+        clockTicks = Double(try reader.u32(64))
+        processes = try (0..<processCount).map { index in
+            let row = processOffset + index * 112, target = try reader.u32(row + 96)
+            guard target < targets.count, try reader.u32(row) > 0 else { throw TopBinaryReader.Failure.invalidPayload }
+            return try Process(target: targets[target].0, container: targets[target].1, pid: reader.u32(row),
+                start: reader.string(row + 56, variable: variable), command: reader.string(row + 64, variable: variable),
+                user: reader.string(row + 72, variable: variable), memory: reader.integer(row + 16),
+                ticks: reader.u64(row + 24), threads: reader.u32(row + 40))
+        }
+        errors = try (0..<errorCount).map { index in
+            "\(try reader.string(errorOffset + index * 16, variable: variable)): \(try reader.string(errorOffset + index * 16 + 8, variable: variable))"
+        }
+    }
 }

@@ -38,6 +38,7 @@ final class ProcessMonitorListModel {
     struct ProcessInfo {
         let pid: Int
         let name: String
+        var displayPID: Int? = nil
     }
 
     typealias CPUHistoryObserver = (_ samples: [CPUSample], _ logicalCpuCount: Int) -> Void

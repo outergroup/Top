@@ -36,7 +36,7 @@ function decodeEnvironmentSnapshot(buffer) {
     if (targetCount || processCount || errorCount) throw new Error("Invalid environment error response");
     throw new Error(message || "Environment discovery failed");
   }
-  if (!targetCount || message) throw new Error("Invalid environment snapshot");
+  if (message) throw new Error("Invalid environment snapshot");
   const targets = [];
   for (let i = 0; i < targetCount; i++) {
     const offset = targetOffset + i * 56;
@@ -68,6 +68,8 @@ function decodeEnvironmentSnapshot(buffer) {
 
 (() => {
   "use strict";
+
+  if (document.documentElement.dataset.combinedProcesses === "true") return;
 
   let processes = new Map();
   let snapshot = null;

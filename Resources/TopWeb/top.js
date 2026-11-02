@@ -1,6 +1,8 @@
 (() => {
   "use strict";
 
+  const containersOnly = document.documentElement.dataset.containersOnly === "true";
+  const combinedProcesses = document.documentElement.dataset.combinedProcesses === "true";
   const ROW_HEIGHT = 28;
   const TABLE_HEADER_HEIGHT = 28;
   const OVERSCAN_ROWS = 5;
@@ -241,7 +243,7 @@
       this.cpuSprite.set(formatDecimal(process.cpu, 1), selected);
       this.cpuTimeSprite.set(formatCPUTime(process.cpuTimeMS), selected);
       this.memorySprite.set(process.kernel ? "—" : formatMemory(process.memoryKB), selected);
-      this.pidSprite.set(String(process.pid), selected);
+      this.pidSprite.set(String(process.displayPID ?? process.pid), selected);
     }
 
     updateEnvironment() {
@@ -345,6 +347,7 @@
   }
 
   async function requestViewport(start, end) {
+    if (containersOnly) { renderLiveTable(); return; }
     if (!state.streamController || state.historical) return;
     state.viewportRequestAt = performance.now();
     state.viewportController?.abort();
@@ -369,17 +372,19 @@
     const userLength = view.getUint32(offset + 24, true);
     const commandLength = view.getUint32(offset + 28, true);
     if (userLength > 65536 || commandLength > 65536) throw new Error("Invalid process stream entry");
-    const end = offset + fixedSize + userLength + commandLength;
+    const stringsEnd = offset + fixedSize + userLength + commandLength;
+    const hasDisplayPID = (view.getUint8(offset + 36) & 2) !== 0;
+    const end = stringsEnd + (hasDisplayPID ? 4 : 0);
     if (bytes.byteLength < end) return null;
     const userStart = offset + fixedSize;
     const previousIndex = view.getInt32(offset + 32, true);
     return {
       value: {
-        pid: view.getUint32(offset, true), cpu: view.getFloat32(offset + 4, true),
+        pid: view.getUint32(offset, true), displayPID: hasDisplayPID ? view.getUint32(stringsEnd, true) : view.getUint32(offset, true), cpu: view.getFloat32(offset + 4, true),
         memoryKB: readU64(view, offset + 8), cpuTimeMS: readU64(view, offset + 16),
         previousIndex: previousIndex >= 0 ? previousIndex : null, kernel: (view.getUint8(offset + 36) & 1) !== 0,
         user: decoder.decode(bytes.subarray(userStart, userStart + userLength)),
-        command: decoder.decode(bytes.subarray(userStart + userLength, end))
+        command: decoder.decode(bytes.subarray(userStart + userLength, stringsEnd))
       }, offset: end
     };
   }
@@ -469,14 +474,14 @@
   function renderLiveTable() {
     if (state.historical || !state.liveFrame) return;
     const frame = state.liveFrame;
-    const containers = window.topEnvironments?.containerRows(state.selection.duration) || [];
+    const containers = combinedProcesses ? [] : (window.topEnvironments?.containerRows(state.selection.duration) || []);
     const query = state.search.toLocaleLowerCase();
     const rows = [...frame.entries.map(process => ({ ...process, key: `host:${process.pid}` })), ...containers]
-      .filter(process => [process.command, process.user, process.pid, process.environment?.environment,
+      .filter(process => [process.command, process.user, process.displayPID ?? process.pid, process.environment?.environment,
         (!process.environment && window.topEnvironments?.lookup(process.pid)?.environment)].join(" ").toLocaleLowerCase().includes(query));
     const field = { cpu: "cpu", memory: "memoryKB", time: "cpuTimeMS", cputime: "cpuTimeMS", cpuTime: "cpuTimeMS", pid: "pid", command: "command", user: "user" }[state.sort] || "cpu";
     rows.sort((a, b) => {
-      const x = a[field], y = b[field];
+      const x = field === "pid" ? (a.displayPID ?? a.pid) : a[field], y = field === "pid" ? (b.displayPID ?? b.pid) : b[field];
       const order = typeof x === "string" ? x.localeCompare(y) : (Number.isFinite(x) ? x : -1) - (Number.isFinite(y) ? y : -1);
       return (state.ascending ? order : -order) || a.key.localeCompare(b.key);
     });
@@ -505,7 +510,7 @@
     if (!state.historical) return;
     state.displayMetrics = frame.metrics;
     applyTableFrame(frame); updateMetrics();
-    setConnection("", "Host history — container rows are live-only");
+    setConnection("", combinedProcesses ? "History" : "Host history — container rows are live-only");
   }
 
   async function loadCPUHistory() {
@@ -1084,5 +1089,11 @@
     for (const view of state.rowViews.values()) view.updateEnvironment();
   });
 
-  updateSortIndicators(); updateMetrics(); loadCPUHistory(); connectStream();
+  updateSortIndicators(); updateMetrics();
+  if (containersOnly) {
+    state.liveFrame = { entries: [], additional: [], metrics: { processCount: 0, threadCount: 0, hasCPU: false }, total: 0, windowStart: 0 };
+    elements.connectionLabel.textContent = "Containers";
+    elements.chart.closest("section")?.setAttribute("hidden", "");
+    renderLiveTable();
+  } else { loadCPUHistory(); connectStream(); }
 })();

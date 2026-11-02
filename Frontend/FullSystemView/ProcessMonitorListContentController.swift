@@ -33,6 +33,14 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
     private let model: ProcessMonitorListModel
     private var viewHasFocus: Bool = true
+    private var containersOnly = false
+    private var windowsHost = false
+    private var containerPoll: DispatchWorkItem?
+    private var containerEntries: [ProcessEntry] = []
+    private var containerIdentities: [String: Int] = [:]
+    private var containerProcesses: [Int: TopContainerSnapshot.Process] = [:]
+    private var containerSamples: [String: (Double, UInt64)] = [:]
+    private var nextContainerIdentity = 0
     private var urlSession: URLSession?
     private lazy var urlSessionQueue: OperationQueue = {
         let queue = OperationQueue()
@@ -138,7 +146,9 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         currentSize = size
         searchFieldInputController.delegate = self
 
-        startProcessStream()
+        let configuration = try? JSONSerialization.jsonObject(with: data) as? [String: Bool]
+        containersOnly = configuration?["containersOnly"] == true
+        windowsHost = configuration?["windowsHost"] == true
 
         updateEditingCapabilities()
         updatePasteboardDropBehavior()
@@ -296,6 +306,9 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
 
 
     func cleanup() {
+        containersOnly = false
+        containerPoll?.cancel()
+        containerPoll = nil
         cancelStream(triggerReconnect: false)
         urlSession?.invalidateAndCancel()
         urlSession = nil
@@ -650,14 +663,14 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
                     role: .cell,
                     frame: cellFrame(columnIndex: 5),
                     label: "PID",
-                    value: String(process.pid)
+                    value: String(process.displayPID ?? process.pid)
                 )
 
                 let rowNode = OuterframeAccessibilityNode(
                     identifier: makeId(),
                     role: .row,
                     frame: adjustedRowFrame,
-                    label: "\(process.command) (PID \(process.pid))",
+                    label: "\(process.command) (PID \(process.displayPID ?? process.pid))",
                     value: "CPU: \(String(format: "%.1f%%", process.cpuPercent)), Memory: \(formatMemory(kilobytes: process.memoryKilobytes, isKernelThread: process.isKernelThread))",
                     children: [commandCell, userCell, cpuCell, cpuTimeCell, memoryCell, pidCell].enumerated().map { columnIndex, original in
                         var cell = original
@@ -690,7 +703,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
             role: .container,
             frame: rootFrame,
             label: "Activity Monitor",
-            children: [stopButtonNode, inspectButtonNode, searchFieldNode, cpuUsageNode, cpuChartNode, countsNode, tableNode]
+            children: [stopButtonNode, inspectButtonNode, searchFieldNode] + (containersOnly ? [] : [cpuUsageNode, cpuChartNode, countsNode]) + [tableNode]
         )
 
         accessibilityNodes.removeAll(keepingCapacity: true)
@@ -1523,7 +1536,84 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
 
+    private func pollContainers() {
+        guard containersOnly, let base = appletBaseURL,
+              let url = URL(string: "/api/environments?operation=processes", relativeTo: base) else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        performSingleRequest(request) { [weak self] data, response, error in
+            let snapshot = data.flatMap { try? TopContainerSnapshot($0) }
+            Task { @MainActor [weak self] in
+                guard let self, self.containersOnly else { return }
+                if let snapshot, (response as? HTTPURLResponse)?.statusCode == 200 {
+                    self.applyContainers(snapshot)
+                } else { self.showStatus(error?.localizedDescription ?? "Container processes are unavailable.") }
+                let next = DispatchWorkItem { [weak self] in self?.pollContainers() }
+                self.containerPoll = next
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: next)
+            }
+        }
+    }
+
+    private func applyContainers(_ snapshot: TopContainerSnapshot) {
+        let prior = containerSamples
+        containerSamples = [:]
+        var identities: [String: Int] = [:]
+        var processes: [Int: TopContainerSnapshot.Process] = [:]
+        containerEntries = snapshot.processes.map { process in
+            let key = process.identity
+            let id: Int
+            if let existing = containerIdentities[key] { id = existing }
+            else { nextContainerIdentity += 1; id = nextContainerIdentity }
+            identities[key] = id
+            processes[id] = process
+            var cpu = 0.0
+            if let previous = prior[key], snapshot.timestamp > previous.0, process.ticks >= previous.1 {
+                cpu = Double(process.ticks - previous.1) * 100 / snapshot.clockTicks / (snapshot.timestamp - previous.0)
+            }
+            containerSamples[key] = (snapshot.timestamp, process.ticks)
+            return ProcessEntry(pid: id, cpuPercent: cpu, memoryKilobytes: process.memory / 1024,
+                cpuTimeMilliseconds: Int(exactly: (Double(process.ticks) * 1000 / snapshot.clockTicks).rounded(.down)) ?? Int.max, isKernelThread: false,
+                user: process.user, command: "\(process.container) · \(process.command)", previousIndex: nil, displayPID: process.pid)
+        }
+        containerIdentities = identities
+        containerProcesses = processes
+        latestSnapshotTimestamp = snapshot.timestamp
+        currentSnapshotIndex += 1
+        renderContainers()
+        showStatus(snapshot.errors.isEmpty ? (containerEntries.isEmpty ? "No container processes." : "Container processes") : snapshot.errors.joined(separator: "; "))
+    }
+
+    private func renderContainers() {
+        guard containersOnly else { return }
+        let search = searchFieldInputController.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var entries = containerEntries.filter { search.isEmpty || "\($0.command) \($0.user) \($0.displayPID ?? $0.pid)".localizedCaseInsensitiveContains(search) }
+        entries.sort { a, b in
+            func compare<T: Comparable>(_ x: T, _ y: T) -> Int { x < y ? -1 : x > y ? 1 : 0 }
+            let order: Int
+            switch model.sortColumn ?? .cpu {
+            case .pid: order = compare(a.displayPID ?? a.pid, b.displayPID ?? b.pid)
+            case .command: order = a.command.localizedStandardCompare(b.command).rawValue
+            case .user: order = a.user.localizedStandardCompare(b.user).rawValue
+            case .memory: order = compare(a.memoryKilobytes, b.memoryKilobytes)
+            case .cpuTime: order = compare(a.cpuTimeMilliseconds, b.cpuTimeMilliseconds)
+            case .cpu: order = compare(a.cpuPercent, b.cpuPercent)
+            }
+            if order == 0 { return a.pid < b.pid }
+            return model.sortAscending ? order < 0 : order > 0
+        }
+        let range = requestedViewportRange()
+        let start = min(range.lowerBound, entries.count), end = min(range.upperBound, entries.count)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        processTable?.updateProcessTableRows(startIndex: start, totalCount: entries.count,
+            entries: Array(entries[start..<end]), additionalEntries: [], snapshotIndex: currentSnapshotIndex)
+        CATransaction.commit()
+        notifyAccessibilityTreeChanged()
+    }
+
     private func startProcessStream() {
+        if containersOnly { pollContainers(); return }
         guard let apiEndpoint else { return }
         var cpuHistoryRequest = URLRequest(url: apiEndpoint.appending(path: "cpu_history"))
         cpuHistoryRequest.timeoutInterval = 20
@@ -1742,6 +1832,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     func announceViewportToServer(immediate: Bool, force: Bool = false) {
+        if containersOnly { renderContainers(); return }
         if model.isShowingHistoricalData {
             pendingViewportAnnouncementTask?.cancel()
             pendingViewportAnnouncementTask = nil
@@ -1855,10 +1946,14 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     }
 
     private func detailURL(forPID pid: Int) -> URL? {
-        return appletOuterURL?.appending(queryItems: [
-            .init(name: "mode", value: "detail"),
-            .init(name: "pid", value: String(pid))
-        ])
+        if let process = containerProcesses[pid] {
+            return appletOuterURL?.appending(queryItems: [.init(name: "mode", value: "detail"),
+                .init(name: "pid", value: String(process.pid)), .init(name: "target", value: process.target),
+                .init(name: "start", value: process.start)])
+        }
+        var items = [URLQueryItem(name: "mode", value: "detail"), URLQueryItem(name: "pid", value: String(pid))]
+        if windowsHost { items.append(URLQueryItem(name: "rowId", value: String(pid))) }
+        return appletOuterURL?.appending(queryItems: items)
     }
 
     private func cancelStream(triggerReconnect: Bool) {
@@ -2016,16 +2111,16 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         if maxMetricsHeight <= 0 {
             desiredMetricsHeight = 0
         }
-        let metricsHeight = max(0, desiredMetricsHeight)
+        let metricsHeight = containersOnly ? 0 : max(0, desiredMetricsHeight)
         let contentTopY = availableHeight
         let commandBarY = max(metricsHeight, contentTopY - commandBarTopInset - commandBarHeight)
         let tableTopY = max(metricsHeight, commandBarY - commandBarBottomSpacing)
         let tableHeight = max(tableTopY - metricsHeight, 0)
 
         layers.tableContainerLayer.frame = CGRect(x: 0,
-                                                  y: metricsHeight,
+                                                  y: metricsHeight + (containersOnly ? 22 : 0),
                                                   width: availableWidth,
-                                                  height: tableHeight)
+                                                  height: max(0, tableHeight - (containersOnly ? 22 : 0)))
 
         let metricsLayer = layers.system.containerLayer
         let divider = layers.system.machineDividerLayer
@@ -2038,10 +2133,6 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         layers.system.cpuChartSectionLayer.isHidden = metricsHeight <= 0
         layers.system.countsSectionLayer.isHidden = metricsHeight <= 0
 
-        if metricsHeight <= 0 {
-            status.frame = .zero
-            return
-        }
 
         let dividerHeight = max(1.0 / max(root.contentsScale, 1), 0.5)
         divider.frame = CGRect(x: 0,
@@ -3000,7 +3091,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         quitDialog = ProcessQuitDialog(outerframeHost: outerframeHost,
                                        appearance: model.effectiveAppearance,
                                        hostLayer: layers.rootLayer,
-                                       pid: process.pid,
+                                       pid: containerProcesses[process.pid]?.pid ?? process.displayPID ?? process.pid,
                                        command: process.name) { [weak self] action in
             guard let self else { return }
             switch action {
@@ -3020,7 +3111,7 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
         blurSearchField()
         updateInputMode()
 
-        let displayString = "PID \(process.pid)"
+        let displayString = "PID \(containerProcesses[process.pid]?.pid ?? process.displayPID ?? process.pid)"
         let preferredSize = CGSize(width: 640, height: 730)
         guard let url = detailURL(forPID: process.pid) else { return }
         appConnection.openNewWindow(with: url,
@@ -3031,12 +3122,19 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     private func sendTerminationRequest(pid: Int, command: String, force: Bool) {
         guard pid > 0, let apiEndpoint else { return }
 
-        let actionPath = force ? "force-quit" : "quit"
-        let requestURL = apiEndpoint
-            .appending(path: actionPath)
-            .appending(queryItems: [URLQueryItem(name: "pid", value: String(pid))])
-        var request = URLRequest(url: requestURL)
-        request.httpMethod = "GET"
+        var request: URLRequest
+        if let process = containerProcesses[pid] {
+            let url = apiEndpoint.deletingLastPathComponent().appending(path: "environments/signal")
+                .appending(queryItems: [.init(name: "target", value: process.target), .init(name: "pid", value: String(process.pid)),
+                    .init(name: "start", value: process.start), .init(name: "force", value: force ? "1" : "0")])
+            request = URLRequest(url: url)
+            request.httpMethod = "POST"
+        } else {
+            guard !containersOnly else { showStatus("This container process has exited."); return }
+            let actionPath = force ? "force-quit" : "quit"
+            request = URLRequest(url: apiEndpoint.appending(path: actionPath).appending(queryItems: [.init(name: "pid", value: String(pid))]))
+            request.httpMethod = "GET"
+        }
 
         performSingleRequest(request) { [weak self] data, response, error in
             Task { @MainActor [weak self] in
@@ -3405,6 +3503,7 @@ struct ProcessEntry {
     let user: String
     let command: String
     let previousIndex: Int?
+    var displayPID: Int? = nil
 }
 
 
@@ -3475,7 +3574,8 @@ private func parseFullViewportContents(_ data: Data) -> (FullViewportContents, I
 
         let userLengthInt = Int(userLength)
         let commandLengthInt = Int(commandLength)
-        let totalLength = entryFixedSize + userLengthInt + commandLengthInt
+        let stringsLength = entryFixedSize + userLengthInt + commandLengthInt
+        let totalLength = stringsLength + ((flags & 0x2) != 0 ? 4 : 0)
         guard data.count >= offset + totalLength else { return nil }
 
         let userStart = offset + entryFixedSize
@@ -3495,7 +3595,8 @@ private func parseFullViewportContents(_ data: Data) -> (FullViewportContents, I
                                  isKernelThread: (flags & 0x1) != 0,
                                  user: user,
                                  command: command,
-                                 previousIndex: previousIndex)
+                                 previousIndex: previousIndex,
+                                 displayPID: (flags & 0x2) != 0 ? readUInt32LE(from: data, offset: offset + stringsLength).map(Int.init) : nil)
         entries.append(entry)
         offset += totalLength
     }
@@ -3560,7 +3661,8 @@ private func parseFullViewportContents(_ data: Data) -> (FullViewportContents, I
 
         let userLengthInt = Int(userLength)
         let commandLengthInt = Int(commandLength)
-        let totalLength = entryFixedSize + userLengthInt + commandLengthInt
+        let stringsLength = entryFixedSize + userLengthInt + commandLengthInt
+        let totalLength = stringsLength + ((flags & 0x2) != 0 ? 4 : 0)
         guard data.count >= entryStart + totalLength else { return nil }
 
         let userStart = entryStart + entryFixedSize
@@ -3580,7 +3682,8 @@ private func parseFullViewportContents(_ data: Data) -> (FullViewportContents, I
                                  isKernelThread: (flags & 0x1) != 0,
                                  user: user,
                                  command: command,
-                                 previousIndex: previousIndex)
+                                 previousIndex: previousIndex,
+                                 displayPID: (flags & 0x2) != 0 ? readUInt32LE(from: data, offset: entryStart + stringsLength).map(Int.init) : nil)
         additionalEntries.append((currentIndex, entry))
         offset = entryStart + totalLength
     }

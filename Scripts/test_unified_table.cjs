@@ -10,7 +10,7 @@ let containers = [{key: 'docker:website:28:100', pid: 28, command: 'ruby3.3', us
 let applied, notice;
 const state = {historical:false, search:'', sort:'cpu', ascending:false, selectedPID:null,
  selection:{duration:60}, liveFrame:{entries:[host], metrics:{processCount:1,threadCount:2}}};
-const context = vm.createContext({state, window:{topEnvironments:{containerRows:()=>containers,lookup:()=>null,error:()=>''}},
+const context = vm.createContext({combinedProcesses:false,state, window:{topEnvironments:{containerRows:()=>containers,lookup:()=>null,error:()=>''}},
  visibleRange:()=>({start:0,end:20}),applyTableFrame:frame=>{applied=frame},updateMetrics(){},
  clearProcessSelection:()=>{state.selectedPID=null},setConnection:(kind,text)=>{notice=text}});
 vm.runInContext(render,context);
@@ -25,3 +25,7 @@ state.search='my websites';run();assert.equal(applied.total,1);assert.equal(appl
 state.selectedPID=containers[0].key;containers=[];run();assert.equal(applied.total,0);assert.equal(state.selectedPID,null);
 assert.equal(notice,'Live');
 console.log('Unified table: colliding PIDs, CPU/memory/time sorting, container search, metrics, and process exit passed.');
+
+context.combinedProcesses = true; state.search = ''; containers = [{pid: 10, cpu: 5}]; run();
+assert.equal(applied.total, 1);
+console.log('Combined Windows stream does not duplicate container rows.');

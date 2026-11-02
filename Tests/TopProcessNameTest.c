@@ -14,8 +14,21 @@ static bool parse_arguments(int count, const char *arguments, size_t length, cha
     return outerframe_app_name_from_arguments(buffer, offset + length, out, capacity);
 }
 
-int main(void) {
-    char name[256];
+int main(int argc, char **argv) {
+    char name[MAX_PROCESS_COMMAND_LEN];
+    if (argc == 3 && strcmp(argv[1], "--expected-name") == 0) {
+        assert(read_process_short_command(getpid(), name, sizeof(name)));
+        assert(strcmp(name, argv[2]) == 0);
+        char small[8];
+        assert(read_process_short_command(getpid(), small, sizeof(small)));
+        assert(small[sizeof(small) - 1] == '\0');
+        assert(strncmp(small, argv[2], sizeof(small) - 1) == 0);
+        assert(!read_process_short_command(getpid(), name, 0));
+        assert(!read_process_short_command(getpid(), NULL, sizeof(name)));
+        assert(!read_process_short_command(-1, name, sizeof(name)));
+        puts("Long process name tests passed");
+        return 0;
+    }
     const char valid[] = "OuterframeContent\0--app-name\0My App 雪\0--infra-socket-fd\0";
     assert(parse_arguments(4, valid, sizeof(valid), name, sizeof(name)));
     assert(strcmp(name, "OuterframeContent: My App 雪") == 0);

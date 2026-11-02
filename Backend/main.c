@@ -188,10 +188,10 @@ typedef struct {
     bool is_kernel_thread;
     char user[64];
     char command[256];
-    char short_command[128];
+    char short_command[MAX_PROCESS_COMMAND_LEN];
     int thread_count;
     char launch_time[64];
-    char parent_short_command[128];
+    char parent_short_command[MAX_PROCESS_COMMAND_LEN];
 } ProcessDetail;
 
 typedef struct {
@@ -1995,15 +1995,23 @@ static bool read_process_short_command(int pid, char *out, size_t out_size) {
     }
     if (outer_loop_process_label(pid, out, out_size)) return true;
     char buffer[PROC_PIDPATHINFO_MAXSIZE];
-    int len = proc_name(pid, buffer, sizeof(buffer));
-    if (len <= 0) {
-        return false;
+    const char *name = buffer;
+    if (proc_pidpath(pid, buffer, sizeof(buffer)) > 0) {
+        buffer[sizeof(buffer) - 1] = '\0';
+        const char *separator = strrchr(buffer, '/');
+        if (separator) {
+            name = separator + 1;
+        }
+    } else {
+        if (proc_name(pid, buffer, sizeof(buffer)) <= 0) {
+            return false;
+        }
+        buffer[sizeof(buffer) - 1] = '\0';
     }
-    buffer[sizeof(buffer) - 1] = '\0';
-    if (strcmp(buffer, "OuterframeContent") == 0 && read_outerframe_app_name(pid, out, out_size)) {
+    if (strcmp(name, "OuterframeContent") == 0 && read_outerframe_app_name(pid, out, out_size)) {
         return true;
     }
-    strncpy(out, buffer, out_size - 1);
+    strncpy(out, name, out_size - 1);
     out[out_size - 1] = '\0';
     return true;
 }
@@ -5520,6 +5528,7 @@ int main(int argc, char *argv[]) {
             return 2;
         }
     }
+    environment_set_web_root(g_web_root);
 
     // Auto-detect mode if neither --label nor --pid-mode specified
     if (g_backend_label[0] == '\0' && g_backend_identifier[0] == '\0') {

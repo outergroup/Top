@@ -750,7 +750,7 @@ final class ProcessTable {
             }
 
             do {
-                let digits = entry.pid
+                let digits = entry.displayPID ?? entry.pid
                 let d0 = Int8((digits / 100_000) % 10) + digitAtlasOffset
                 let d1 = Int8((digits /  10_000) % 10) + digitAtlasOffset
                 let d2 = Int8((digits /   1_000) % 10) + digitAtlasOffset
@@ -1485,7 +1485,7 @@ final class ProcessTable {
 
         guard let entry = entry(atGlobalIndex: index) else { return }
 
-        updateSelection(.init(pid: entry.process.pid, name: entry.process.command))
+        updateSelection(.init(pid: entry.process.pid, name: entry.process.command, displayPID: entry.process.displayPID))
     }
 
     func clearSelection() {

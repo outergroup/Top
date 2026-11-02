@@ -107,8 +107,16 @@ OUTPUT_APP_ROOT="${OUTPUT_ROOT}/Top"
 rm -rf "${OUTPUT_APP_ROOT}"
 mkdir -p "${OUTPUT_APP_ROOT}"
 
+echo "==> Building container helpers"
+for helper_arch in x86_64 aarch64; do
+    mkdir -p "${PACKAGE_ROOT}/helpers/linux-${helper_arch}"
+    "${REPO_ROOT}/Helper/build.sh" linux "${helper_arch}" "${PACKAGE_ROOT}/helpers/linux-${helper_arch}/outer-top-helper"
+done
+
 install_shared_resources() {
     local app_root="$1"
+    rm -rf "${app_root}/helpers"
+    cp -R "${PACKAGE_ROOT}/helpers" "${app_root}/helpers"
     mkdir -p "${app_root}/bundles" "${app_root}/web"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${app_root}/bundles/TopContent.bundle.macos-arm.aar"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${app_root}/bundles/TopContent.bundle.macos-x86.aar"
@@ -177,6 +185,7 @@ package_macos_variant() {
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-arm.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-arm.aar"
     install -m 0644 "${PACKAGE_ROOT}/bundles/TopContent.bundle.macos-x86.aar" "${macos_app_root}/Contents/Resources/bundles/TopContent.bundle.macos-x86.aar"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/app-icon.png"
+    cp -R "${PACKAGE_ROOT}/helpers" "${macos_app_root}/Contents/Resources/helpers"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/index.html" "${macos_app_root}/Contents/Resources/web/index.html"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${macos_app_root}/Contents/Resources/web/app-icon.png"
     install -m 0644 "${REPO_ROOT}/Resources/TopWeb/top.css" "${macos_app_root}/Contents/Resources/web/top.css"
