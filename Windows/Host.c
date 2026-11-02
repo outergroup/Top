@@ -28,9 +28,20 @@ typedef struct {
     bool has_cpu;
     uint32_t cores;
 } Sample;
+typedef struct {
+    uint32_t id;
+    uint64_t created;
+} OrderedProcess;
+typedef struct {
+    OrderedProcess *rows;
+    size_t count;
+    char *sort, *search;
+    bool ascending;
+} ProcessOrder;
 typedef struct Client {
     struct Client *next;
     char *id, *query;
+    ProcessOrder order;
 } Client;
 static SRWLOCK lock = SRWLOCK_INIT;
 static Sample history[HISTORY], containers;
@@ -93,27 +104,288 @@ static bool same(const Row *a, const Row *b) {
     return a->id == b->id && a->created == b->created &&
            !strcmp(a->start, b->start);
 }
-static char *process_user(HANDLE p) {
-    HANDLE token;
-    if (!OpenProcessToken(p, TOKEN_QUERY, &token))
-        return win_strdup("Unavailable");
-    DWORD n = 0;
-    GetTokenInformation(token, TokenUser, NULL, 0, &n);
-    TOKEN_USER *user = win_alloc(n);
+typedef struct Owner {
+    struct Owner *next;
+    DWORD pid;
+    uint64_t created, seen, retry;
+    char *name;
+} Owner;
+typedef struct SidName {
+    struct SidName *next;
+    unsigned char sid[SECURITY_MAX_SID_SIZE];
+    char *name;
+    uint64_t expires;
+} SidName;
+static SRWLOCK owner_lock = SRWLOCK_INIT;
+static Owner *owners;
+static SidName *sid_names;
+static HANDLE owner_event, owner_stop, owner_thread;
+static unsigned char *process_buffer;
+static ULONG process_capacity;
+static char *resolve_owner(DWORD pid, uint64_t created) {
     char *result = NULL;
-    if (GetTokenInformation(token, TokenUser, user, n, &n)) {
-        wchar_t name[256], domain[256];
-        DWORD nl = 256, dl = 256;
-        SID_NAME_USE use;
-        if (LookupAccountSidW(NULL, user->User.Sid, name, &nl, domain, &dl,
-                              &use))
-            result = win_utf8(name);
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p)
+        return NULL;
+    FILETIME birth, exit, kernel, user;
+    HANDLE token = NULL;
+    if (GetProcessTimes(p, &birth, &exit, &kernel, &user) &&
+        ticks(birth) == created)
+        OpenProcessToken(p, TOKEN_QUERY, &token);
+    CloseHandle(p);
+    if (!token)
+        return NULL;
+    DWORD length = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &length);
+    TOKEN_USER *info = win_alloc(length);
+    if (GetTokenInformation(token, TokenUser, info, length, &length) &&
+        IsValidSid(info->User.Sid)) {
+        SidName *entry = sid_names;
+        while (entry && !EqualSid(entry->sid, info->User.Sid))
+            entry = entry->next;
+        if (!entry) {
+            entry = win_alloc(sizeof(*entry));
+            memset(entry, 0, sizeof(*entry));
+            CopySid(sizeof(entry->sid), entry->sid, info->User.Sid);
+            entry->next = sid_names;
+            sid_names = entry;
+        }
+        uint64_t now = GetTickCount64();
+        if (now >= entry->expires) {
+            wchar_t name[256], domain[256];
+            DWORD nl = 256, dl = 256;
+            SID_NAME_USE use;
+            free(entry->name);
+            entry->name = NULL;
+            if (LookupAccountSidW(NULL, entry->sid, name, &nl, domain, &dl,
+                                  &use))
+                entry->name = win_utf8(name);
+            entry->expires = now + (entry->name ? 300000 : 30000);
+        }
+        if (entry->name)
+            result = win_strdup(entry->name);
     }
-    free(user);
+    free(info);
     CloseHandle(token);
-    return result ? result : win_strdup("Unavailable");
+    return result;
 }
-static Sample collect_host(void) {
+static DWORD WINAPI owner_loop(void *context) {
+    (void)context;
+    HANDLE events[] = {owner_stop, owner_event};
+    while (WaitForMultipleObjects(2, events, FALSE, INFINITE) ==
+           WAIT_OBJECT_0 + 1) {
+        while (WaitForSingleObject(owner_stop, 0) == WAIT_TIMEOUT) {
+            DWORD pid = 0;
+            uint64_t created = 0, now = GetTickCount64();
+            AcquireSRWLockExclusive(&owner_lock);
+            Owner **link = &owners;
+            while (*link) {
+                Owner *entry = *link;
+                if (now - entry->seen > 60000) {
+                    *link = entry->next;
+                    free(entry->name);
+                    free(entry);
+                    continue;
+                }
+                if (!pid && now >= entry->retry) {
+                    pid = entry->pid;
+                    created = entry->created;
+                    entry->retry = now + 30000;
+                }
+                link = &entry->next;
+            }
+            ReleaseSRWLockExclusive(&owner_lock);
+            if (!pid)
+                break;
+            char *name = resolve_owner(pid, created);
+            AcquireSRWLockExclusive(&owner_lock);
+            for (Owner *entry = owners; entry; entry = entry->next)
+                if (entry->pid == pid && entry->created == created) {
+                    free(entry->name);
+                    entry->name = name;
+                    name = NULL;
+                    entry->retry =
+                        GetTickCount64() + (entry->name ? 300000 : 30000);
+                    break;
+                }
+            ReleaseSRWLockExclusive(&owner_lock);
+            free(name);
+        }
+        SidName **link = &sid_names;
+        uint64_t now = GetTickCount64();
+        while (*link) {
+            SidName *entry = *link;
+            if (now > entry->expires + 300000) {
+                *link = entry->next;
+                free(entry->name);
+                free(entry);
+            } else
+                link = &entry->next;
+        }
+    }
+    return 0;
+}
+static char *cached_owner(DWORD pid, uint64_t created) {
+    if (!owner_thread || !created)
+        return win_strdup("—");
+    AcquireSRWLockExclusive(&owner_lock);
+    Owner *entry = owners;
+    while (entry && (entry->pid != pid || entry->created != created))
+        entry = entry->next;
+    if (!entry) {
+        entry = win_alloc(sizeof(*entry));
+        memset(entry, 0, sizeof(*entry));
+        entry->pid = pid;
+        entry->created = created;
+        entry->next = owners;
+        owners = entry;
+    }
+    entry->seen = GetTickCount64();
+    char *name = win_strdup(entry->name ? entry->name : "—");
+    bool pending = entry->seen >= entry->retry;
+    ReleaseSRWLockExclusive(&owner_lock);
+    if (pending)
+        SetEvent(owner_event);
+    return name;
+}
+static bool owners_start(void) {
+    owner_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    owner_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (owner_stop && owner_event)
+        owner_thread = CreateThread(NULL, 0, owner_loop, NULL, 0, NULL);
+    return owner_thread != NULL;
+}
+static void owners_stop(void) {
+    if (owner_stop)
+        SetEvent(owner_stop);
+    if (owner_thread) {
+        WaitForSingleObject(owner_thread, INFINITE);
+        CloseHandle(owner_thread);
+    }
+    if (owner_event)
+        CloseHandle(owner_event);
+    if (owner_stop)
+        CloseHandle(owner_stop);
+    owner_thread = owner_event = owner_stop = NULL;
+    while (owners) {
+        Owner *next = owners->next;
+        free(owners->name);
+        free(owners);
+        owners = next;
+    }
+    while (sid_names) {
+        SidName *next = sid_names->next;
+        free(sid_names->name);
+        free(sid_names);
+        sid_names = next;
+    }
+    free(process_buffer);
+    process_buffer = NULL;
+    process_capacity = 0;
+}
+typedef struct {
+    USHORT length, maximum;
+    PWSTR buffer;
+} NativeString;
+typedef struct {
+    ULONG next, threads;
+    LARGE_INTEGER private_working_set;
+    ULONG hard_faults, thread_high_water;
+    ULONGLONG cycles;
+    LARGE_INTEGER created, user, kernel;
+    NativeString image;
+    LONG priority;
+    HANDLE pid, parent;
+    ULONG handles, session;
+    ULONG_PTR key;
+    SIZE_T peak_virtual, virtual_size;
+    ULONG page_faults;
+    SIZE_T peak_working_set, working_set;
+} NativeProcess;
+typedef LONG(NTAPI *QuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+static bool parse_processes(Sample *s, unsigned char *buffer, ULONG length) {
+    size_t offset = 0;
+    for (;;) {
+        if (offset > length || length - offset < sizeof(NativeProcess))
+            return false;
+        NativeProcess *p = (NativeProcess *)(buffer + offset);
+        if (p->next && (p->next < sizeof(*p) || p->next > length - offset ||
+                        p->next % sizeof(void *)))
+            return false;
+        uintptr_t name = (uintptr_t)p->image.buffer, base = (uintptr_t)buffer;
+        if (p->image.length % sizeof(wchar_t) ||
+            (p->image.length && (name < base || name - base > length ||
+                                 p->image.length > length - (name - base))))
+            return false;
+        if ((ULONG_PTR)p->pid) {
+            size_t chars = p->image.length / sizeof(wchar_t);
+            wchar_t *wide = win_alloc((chars + 1) * sizeof(wchar_t));
+            if (chars)
+                memcpy(wide, p->image.buffer, p->image.length);
+            wide[chars] = 0;
+            Row r = {.id = (DWORD)(ULONG_PTR)p->pid,
+                     .pid = (DWORD)(ULONG_PTR)p->pid,
+                     .parent = (DWORD)(ULONG_PTR)p->parent,
+                     .threads = p->threads,
+                     .created = (uint64_t)p->created.QuadPart,
+                     .ticks = (uint64_t)p->kernel.QuadPart +
+                              (uint64_t)p->user.QuadPart,
+                     .memory = p->working_set,
+                     .command = win_utf8(wide),
+                     .target = win_strdup(""),
+                     .start = win_strdup("")};
+            free(wide);
+            r.user = cached_owner(r.pid, r.created);
+            append_row(s, r);
+        }
+        if (!p->next)
+            return true;
+        offset += p->next;
+    }
+}
+static bool collect_bulk(Sample *s) {
+    HMODULE module = GetModuleHandleW(L"ntdll.dll");
+    QuerySystemInformation query = NULL;
+    FARPROC address =
+        module ? GetProcAddress(module, "NtQuerySystemInformation") : NULL;
+    memcpy(&query, &address, sizeof(query));
+    if (!query)
+        return false;
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        if (!process_capacity) {
+            process_capacity = 256 * 1024;
+            process_buffer = win_alloc(process_capacity);
+        }
+        ULONG needed = 0;
+        LONG status = query(5, process_buffer, process_capacity, &needed);
+        if (status >= 0) {
+            if (!needed || needed > process_capacity)
+                return false;
+            Sample rows = {0};
+            if (!parse_processes(&rows, process_buffer, needed)) {
+                sample_free(&rows);
+                return false;
+            }
+            s->rows = rows.rows;
+            s->count = rows.count;
+            return true;
+        }
+        if ((ULONG)status != 0xc0000004UL && (ULONG)status != 0xc0000023UL)
+            return false;
+        uint64_t capacity = (uint64_t)needed + 65536;
+        if (capacity < (uint64_t)process_capacity * 2)
+            capacity = (uint64_t)process_capacity * 2;
+        if (capacity > 64 * 1024 * 1024)
+            return false;
+        unsigned char *grown = realloc(process_buffer, (size_t)capacity);
+        if (!grown)
+            return false;
+        process_buffer = grown;
+        process_capacity = (ULONG)capacity;
+    }
+    return false;
+}
+static Sample collect_host_mode(bool bulk) {
     Sample s = {.time = timestamp(), .monotonic = GetTickCount64() / 1000.0};
     FILETIME idle, kernel, user;
     s.cores = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
@@ -139,6 +411,8 @@ static Sample collect_host(void) {
     }
     if (!cpu_ok)
         s.idle = s.kernel = s.user = 0;
+    if (bulk && collect_bulk(&s))
+        return s;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE)
         return s;
@@ -165,15 +439,16 @@ static Sample collect_host(void) {
                 PROCESS_MEMORY_COUNTERS memory = {.cb = sizeof(memory)};
                 if (GetProcessMemoryInfo(p, &memory, sizeof(memory)))
                     r.memory = memory.WorkingSetSize;
-                r.user = process_user(p);
+                r.user = cached_owner(r.pid, r.created);
                 CloseHandle(p);
             } else
-                r.user = win_strdup("Unavailable");
+                r.user = win_strdup("—");
             append_row(&s, r);
         } while (Process32NextW(snapshot, &entry));
     CloseHandle(snapshot);
     return s;
 }
+static Sample collect_host(void) { return collect_host_mode(true); }
 static DWORD WINAPI sample_loop(void *context) {
     (void)context;
     do {
@@ -357,7 +632,33 @@ static bool matches(const Row *r, const char *search) {
                 return true;
     return false;
 }
-static StringBuilder frame(HttpRequest *request) {
+static void order_free(ProcessOrder *order) {
+    free(order->rows);
+    free(order->sort);
+    free(order->search);
+    *order = (ProcessOrder){0};
+}
+static void append_frame_row(StringBuilder *b, const Row *r,
+                             uint32_t previous) {
+    size_t o = b->length;
+    binary_append_zero(b, 37);
+    payload_u32(b, o, r->id);
+    put_float(b, o + 4, r->cpu);
+    payload_u64(b, o + 8, r->memory / 1024);
+    payload_u64(b, o + 16, r->ticks / 10000);
+    payload_u32(b, o + 24, (uint32_t)strlen(r->user));
+    payload_u32(b, o + 28, (uint32_t)strlen(r->command));
+    payload_u32(b, o + 32, previous);
+    b->data[o + 36] = 2;
+    sb_append(b, r->user);
+    sb_append(b, r->command);
+    o = b->length;
+    binary_append_zero(b, 4);
+    payload_u32(b, o, r->pid);
+}
+static StringBuilder ordered_frame(HttpRequest *request,
+                                   ProcessOrder *previous_order) {
+
     StringBuilder b = payload(52);
     if (!history_count)
         return b;
@@ -418,6 +719,33 @@ static StringBuilder frame(HttpRequest *request) {
     size_t last = (size_t)fmin(
         (double)count,
         fmax((double)first, query_number(request, "end", 1000000)));
+    uint32_t *previous = win_alloc((count ? count : 1) * sizeof(*previous));
+    bool valid_order = previous_order && previous_order->sort &&
+                       !strcmp(previous_order->sort, order.sort) &&
+                       !strcmp(previous_order->search, search ? search : "") &&
+                       previous_order->ascending == order.ascending;
+    for (size_t i = 0; i < count; ++i) {
+        previous[i] = UINT32_MAX;
+        if (valid_order)
+            for (size_t j = 0; j < previous_order->count; ++j)
+                if (rows[i].row.id == previous_order->rows[j].id &&
+                    rows[i].row.created == previous_order->rows[j].created) {
+                    previous[i] = (uint32_t)j;
+                    break;
+                }
+    }
+    if (previous_order) {
+        order_free(previous_order);
+        previous_order->rows =
+            win_alloc((count ? count : 1) * sizeof(*previous_order->rows));
+        previous_order->count = count;
+        previous_order->sort = win_strdup(order.sort);
+        previous_order->search = win_strdup(search ? search : "");
+        previous_order->ascending = order.ascending;
+        for (size_t i = 0; i < count; ++i)
+            previous_order->rows[i] =
+                (OrderedProcess){rows[i].row.id, rows[i].row.created};
+    }
     put_double(&b, 0, latest->time);
     payload_u32(&b, 8, (uint32_t)(last - first));
     payload_u32(&b, 12, (uint32_t)first);
@@ -426,24 +754,8 @@ static StringBuilder frame(HttpRequest *request) {
     put_double(&b, 28, start);
     put_double(&b, 36, end);
     b.data[44] = fixed ? 1 : 3;
-    for (size_t i = first; i < last; ++i) {
-        Row *r = &rows[i].row;
-        size_t o = b.length;
-        binary_append_zero(&b, 37);
-        payload_u32(&b, o, r->id);
-        put_float(&b, o + 4, r->cpu);
-        payload_u64(&b, o + 8, r->memory / 1024);
-        payload_u64(&b, o + 16, r->ticks / 10000);
-        payload_u32(&b, o + 24, (uint32_t)strlen(r->user));
-        payload_u32(&b, o + 28, (uint32_t)strlen(r->command));
-        payload_u32(&b, o + 32, UINT32_MAX);
-        b.data[o + 36] = 2;
-        sb_append(&b, r->user);
-        sb_append(&b, r->command);
-        o = b.length;
-        binary_append_zero(&b, 4);
-        payload_u32(&b, o, r->pid);
-    }
+    for (size_t i = first; i < last; ++i)
+        append_frame_row(&b, &rows[i].row, previous[i]);
     size_t o = b.length;
     binary_append_zero(&b, 33);
     b.data[o] = latest->has_cpu;
@@ -463,12 +775,27 @@ static StringBuilder frame(HttpRequest *request) {
     payload_u32(&b, o + 17, (uint32_t)count);
     payload_u32(&b, o + 21, threads);
     payload_u32(&b, o + 25, latest->cores);
+    uint32_t additional = 0;
+    for (size_t i = 0; i < count; ++i)
+        if ((i < first || i >= last) && previous[i] != UINT32_MAX &&
+            previous[i] >= first && previous[i] < last) {
+            size_t offset = b.length;
+            binary_append_zero(&b, 4);
+            payload_u32(&b, offset, (uint32_t)i);
+            append_frame_row(&b, &rows[i].row, previous[i]);
+            ++additional;
+        }
+    payload_u32(&b, o + 29, additional);
+    free(previous);
     free(rows);
     free(mode);
     free(search);
     free(sort);
     free(direction);
     return b;
+}
+static StringBuilder frame(HttpRequest *request) {
+    return ordered_frame(request, NULL);
 }
 static StringBuilder cpu_history(void) {
     StringBuilder b = payload(32 + history_count * 40);
@@ -591,7 +918,7 @@ bool top_request(Connection *c, HttpRequest *r, const char *directory) {
         do {
             AcquireSRWLockShared(&lock);
             HttpRequest query = {.query = client.query};
-            StringBuilder b = frame(&query);
+            StringBuilder b = ordered_frame(&query, &client.order);
             ReleaseSRWLockShared(&lock);
             if (ok)
                 ok = connection_write(c, b.data, b.length);
@@ -604,6 +931,7 @@ bool top_request(Connection *c, HttpRequest *r, const char *directory) {
         if (*p)
             *p = client.next;
         ReleaseSRWLockExclusive(&lock);
+        order_free(&client.order);
         free(client.id);
         free(client.query);
         return true;
@@ -678,6 +1006,10 @@ bool top_request(Connection *c, HttpRequest *r, const char *directory) {
 }
 bool top_start(HANDLE stop) {
     stop_event = stop;
+    if (!owners_start()) {
+        owners_stop();
+        return false;
+    }
     Sample first = collect_host();
     for (size_t i = 0; i < first.count; ++i)
         first.rows[i].id = next_host_id++;
@@ -701,4 +1033,5 @@ void top_stop(void) {
     for (size_t i = 0; i < history_count; ++i)
         sample_free(at(i));
     sample_free(&containers);
+    owners_stop();
 }

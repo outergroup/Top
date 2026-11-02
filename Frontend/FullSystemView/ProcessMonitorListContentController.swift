@@ -3856,7 +3856,30 @@ private extension NSColor {
 // MARK: - OuterframeHostDelegate
 
 extension ProcessMonitorListContentController: OuterframeHostDelegate {
+    private func resetTextCaretBlink() {
+        guard let caret = layers?.searchField.caretLayer else { return }
+        let caretLayers = [caret]
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for caret in caretLayers {
+            guard let animation = caret.animation(forKey: searchFieldCaretBlinkAnimationKey)?.copy() as? CAAnimation else { continue }
+            caret.removeAnimation(forKey: searchFieldCaretBlinkAnimationKey)
+            caret.opacity = 1
+            animation.beginTime = CACurrentMediaTime() + 0.55
+            caret.add(animation, forKey: searchFieldCaretBlinkAnimationKey)
+        }
+        CATransaction.commit()
+    }
+
     func outerframeHost(_ host: OuterframeHost, didReceiveMessage message: BrowserToContentMessage) {
+        switch message {
+        case .keyDown, .textInput, .setMarkedText, .textCommand, .setCursorPosition,
+             .mouseDown, .mouseDragged, .pasteboardContentPasted, .pasteboardContentDropped,
+             .contextMenuItemSelected, .accessibilityActionAndSnapshot:
+            resetTextCaretBlink()
+        default:
+            break
+        }
         switch message {
         case .initializeContent:
             // Already handled during start, ignore if received again

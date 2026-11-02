@@ -24,8 +24,20 @@ for(let end=0; end<context.bytes.length; ++end) {
   context.partial = context.bytes.subarray(0,end);
   assert.equal(vm.runInContext('parseFrame(partial)',context), null);
 }
-console.log('PASS HTML Windows frame, display PID and all partial-frame boundaries');
-'''.replace('WEB', json.dumps(web)).replace('FRAME));', json.dumps(frame) + '));')
+context.bytes = new Uint8Array(fs.readFileSync(MOTION));
+const motion = vm.runInContext('parseFrame(bytes)', context);
+assert.equal(motion.consumed, context.bytes.length);
+assert.equal(motion.frame.entries[0].previousIndex, 1);
+assert.equal(motion.frame.entries[0].displayPID, 10);
+assert.equal(motion.frame.additional.length, 1);
+assert.equal(motion.frame.additional[0][0], 2);
+assert.equal(motion.frame.additional[0][1].previousIndex, 0);
+for(let end=0; end<context.bytes.length; ++end) {
+  context.partial = context.bytes.subarray(0,end);
+  assert.equal(vm.runInContext('parseFrame(partial)',context), null);
+}
+console.log('PASS HTML Windows frames, movement, outgoing rows, display PID and partial-frame boundaries');
+'''.replace('WEB', json.dumps(web)).replace('FRAME));', json.dumps(frame) + '));').replace('MOTION', json.dumps(frame + '.motion'))
 subprocess.run(['node', '-e', script], check=True)
 source = (root / 'Frontend/FullSystemView/ProcessMonitorListContentController.swift').read_text()
 code = ('import Foundation\n' + source[source.index('private struct SystemMetrics {'):source.index('private func formattedInteger(')]
@@ -37,7 +49,14 @@ precondition(count == data.count && frame.entries.count == 3)
 precondition(frame.entries[1].pid == 0x40000000 && frame.entries[1].displayPID == 10)
 precondition(frame.systemMetrics?.logicalCpuCount == 8)
 for end in 0..<data.count { precondition(parseFullViewportContents(data.prefix(end)) == nil) }
-print("PASS outerframe Windows frame, display PID and all partial-frame boundaries")
+let motionData = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1] + ".motion"))
+guard let (motion, motionCount) = parseFullViewportContents(motionData) else { fatalError("Motion decode failed") }
+precondition(motionCount == motionData.count && motion.entries.count == 1)
+precondition(motion.entries[0].previousIndex == 1 && motion.entries[0].displayPID == 10)
+precondition(motion.additionalEntries.count == 1)
+precondition(motion.additionalEntries[0].0 == 2 && motion.additionalEntries[0].1.previousIndex == 0)
+for end in 0..<motionData.count { precondition(parseFullViewportContents(motionData.prefix(end)) == nil) }
+print("PASS outerframe Windows frames, movement, outgoing rows, display PID and partial-frame boundaries")
 '''
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory) / 'StreamTest.swift'
