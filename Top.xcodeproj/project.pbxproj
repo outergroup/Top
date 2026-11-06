@@ -41,30 +41,7 @@
 			);
 			target = 37630D982F495DF4000075B1 /* TopBackend */;
 		};
-		37956F8E2FA1734C00944056 /* Exceptions for "Frontend" folder in "Top" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Common/ScrollbarController.swift,
-				Common/SingleLineTextInputController.swift,
-				FullSystemView/CPUHistoryChart.swift,
-				FullSystemView/CPUStatsSection.swift,
-				FullSystemView/ProcessMonitorListContentController.swift,
-				FullSystemView/ProcessMonitorListModel.swift,
-				FullSystemView/ProcessQuitDialog.swift,
-				FullSystemView/ProcessTable.swift,
-				ProcessView/ProcessDetailContentController.swift,
-				TopContent.swift,
-				Vendor/Common/OuterframeAppConnection.swift,
-				Vendor/Common/OuterframeContentController.swift,
-				Vendor/Common/SafeDispatchSource.swift,
-				Vendor/OuterframeSwiftMethods/OuterContentSocketMessage.swift,
-				Vendor/OuterframeSwiftMethods/OuterframeAccessibility.swift,
-				Vendor/OuterframeSwiftMethods/OuterframeHost.swift,
-				Vendor/OuterframeSwiftMethods/SocketToBrowser.swift,
-				Vendor/TextEditing/TextUndoHistory.swift,
-			);
-			target = 37630D902F495DDD000075B1 /* Top */;
-		};
+
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -78,9 +55,6 @@
 		};
 		37956F832FA1734B00944056 /* Frontend */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				37956F8E2FA1734C00944056 /* Exceptions for "Frontend" folder in "Top" target */,
-			);
 			path = Frontend;
 			sourceTree = "<group>";
 		};
@@ -149,6 +123,9 @@
 			buildRules = (
 			);
 			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				37956F832FA1734B00944056 /* Frontend */,
 			);
 			name = Top;
 			packageProductDependencies = (
@@ -271,6 +248,7 @@
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Frontend";
 				SWIFT_OBJC_BRIDGING_HEADER = "Frontend/Top-Bridging-Header.h";
 				SWIFT_VERSION = 6.0;
 				WRAPPER_EXTENSION = bundle;
@@ -303,6 +281,7 @@
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Frontend";
 				SWIFT_OBJC_BRIDGING_HEADER = "Frontend/Top-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Osize";
 				SWIFT_VERSION = 6.0;

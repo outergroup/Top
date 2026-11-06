@@ -1374,11 +1374,11 @@ class ProcessMonitorListContentController: NSObject, TopContentController, @Main
     func scrollWheel(delta: CGPoint,
                      at point: CGPoint,
                      modifierFlags _: NSEvent.ModifierFlags,
-                     phase _: NSEvent.Phase,
-                     momentumPhase _: NSEvent.Phase,
+                     phase: NSEvent.Phase,
+                     momentumPhase: NSEvent.Phase,
                      hasPreciseScrollingDeltas: Bool) {
         guard let layers = layers else { return }
-        _ = processTable?.scrollWheel(delta: delta, at: point, hasPreciseScrollingDeltas: hasPreciseScrollingDeltas, rootLayer: layers.rootLayer)
+        _ = processTable?.scrollWheel(delta: delta, at: point, hasPreciseScrollingDeltas: hasPreciseScrollingDeltas, rootLayer: layers.rootLayer, phase: phase, momentumPhase: momentumPhase)
     }
 
     // MARK: - Text Input Handling (independent of any particular control)

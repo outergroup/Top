@@ -290,6 +290,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     // Self-reference to prevent deallocation while socket is open
     private var retainedSelf: ProcessDetailContentController?
 
+    private lazy var elasticScrolling = ElasticScrollController(host: outerframeHost)
     private var detailScrollbarController: ScrollbarController<ProcessDetailContentController>!
 
     init?(outerframeHost: OuterframeHost, appearance: NSAppearance, windowIsActive: Bool, with data: Data, size: CGSize, appConnection hostAppConnection: OuterframeAppConnection) {
@@ -606,6 +607,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         appletOriginURL = nil
         appletBaseURL = nil
         appletOuterURL = nil
+        elasticScrolling.reset()
         detailScrollbarController.cleanup()
         currentScrollOffset = 0
         selectedPID = nil
@@ -911,6 +913,7 @@ final class ProcessDetailContentController: NSObject, TopContentController {
         }
 
         let viewport = layers.openFiles.viewportLayer
+        let point = elasticScrolling.finish(at: point, in: root)
         if detailScrollbarController.handleMouseDown(at: root.convert(point, to: viewport)) == true {
             return
         }
@@ -937,19 +940,17 @@ final class ProcessDetailContentController: NSObject, TopContentController {
     func scrollWheel(delta: CGPoint,
                      at point: CGPoint,
                      modifierFlags _: NSEvent.ModifierFlags,
-                     phase _: NSEvent.Phase,
-                     momentumPhase _: NSEvent.Phase,
+                     phase: NSEvent.Phase,
+                     momentumPhase: NSEvent.Phase,
                      hasPreciseScrollingDeltas: Bool) {
 
         let root = layers.rootLayer
         let viewport = layers.openFiles.viewportLayer
         let pointInViewport = viewport.convert(point, from: root)
-        guard viewport.bounds.contains(pointInViewport) else { return }
+        guard elasticScrolling.isActive("files") || viewport.bounds.contains(pointInViewport) else { return }
         let multiplier: CGFloat = hasPreciseScrollingDeltas ? 1.0 : detailOpenFilesRowHeight
-        let adjustedDeltaY = delta.y * multiplier
-        guard adjustedDeltaY != 0 else { return }
         detailScrollbarController.cancelAnimation()
-        _ = scrollDetailOpenFiles(byAdjustedDeltaY: adjustedDeltaY)
+        setDetailScrollOffset(elasticScrolling.scroll("files", by: -delta.y * multiplier, offset: currentScrollOffset, maximum: maxDetailScrollOffset(), viewport: viewport.bounds.height, phase: phase, momentumPhase: momentumPhase, precise: hasPreciseScrollingDeltas, direction: -1) { [weak self] in self.map { [$0.layers.openFiles.contentLayer] } ?? [] })
     }
 
     // MARK: Private API

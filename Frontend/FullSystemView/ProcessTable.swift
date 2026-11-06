@@ -153,6 +153,7 @@ final class ProcessTable {
         let pidContainer: CALayer
     }
 
+    private lazy var elasticScrolling = ElasticScrollController(host: appConnection)
     private let appConnection: OuterframeHost
     private let model: ProcessMonitorListModel
     private let position: CGPoint
@@ -367,6 +368,7 @@ final class ProcessTable {
     }
 
     func cleanup() {
+        elasticScrolling.reset()
         rowsScrollbarController.cleanup()
     }
 
@@ -1154,17 +1156,15 @@ final class ProcessTable {
     func scrollWheel(delta: CGPoint,
                      at point: CGPoint,
                      hasPreciseScrollingDeltas: Bool,
-                     rootLayer: CALayer) -> Bool {
+                     rootLayer: CALayer,
+                     phase: NSEvent.Phase, momentumPhase: NSEvent.Phase) -> Bool {
 
         let pointInViewport = listLayers.rowsViewportLayer.convert(point, from: rootLayer)
-        guard listLayers.rowsViewportLayer.bounds.contains(pointInViewport) else { return false }
+        guard elasticScrolling.isActive("rows") || listLayers.rowsViewportLayer.bounds.contains(pointInViewport) else { return false }
 
         let multiplier: CGFloat = hasPreciseScrollingDeltas ? 1.0 : rowHeight
-        let adjustedDeltaY = delta.y * multiplier
-        if adjustedDeltaY != 0 {
-            rowsScrollbarController.cancelAnimation()
-            _ = scrollRows(byAdjustedDeltaY: adjustedDeltaY)
-        }
+        rowsScrollbarController.cancelAnimation()
+        setRowsScrollOffset(elasticScrolling.scroll("rows", by: -delta.y * multiplier, offset: currentScrollOffset, maximum: maxRowsScrollOffset(), viewport: listLayers.rowsViewportLayer.bounds.height, phase: phase, momentumPhase: momentumPhase, precise: hasPreciseScrollingDeltas, direction: -1) { [weak self] in self.map { [$0.listLayers.rowsContentLayer] } ?? [] })
         return true
     }
 
@@ -1229,6 +1229,7 @@ final class ProcessTable {
     }
 
     func mouseDown(at rootPoint: CGPoint, modifierFlags: NSEvent.ModifierFlags, clickCount: Int, rootLayer: CALayer) -> Bool {
+        let rootPoint = elasticScrolling.finish(at: rootPoint, in: rootLayer)
         if rowsScrollbarController.handleMouseDown(at: rootLayer.convert(rootPoint, to: listLayers.rowsViewportLayer)) == true {
             return true
         }
