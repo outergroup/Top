@@ -155,6 +155,12 @@ protocol OuterframeHostDelegate: AnyObject {
 @MainActor
 final class OuterframeHost: SocketToBrowserDelegate {
     let socket: SocketToBrowser
+    var dataDirectoryURL: URL? {
+        guard let path = ProcessInfo.processInfo.environment["OUTERFRAME_DATA_DIR"],
+              path.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
     var stagedFileDirectoryURL: URL? {
         guard let path = ProcessInfo.processInfo.environment["OUTERFRAME_STAGING_DIR"],
               !path.isEmpty else {
@@ -326,6 +332,36 @@ final class OuterframeHost: SocketToBrowserDelegate {
     func setIcon(_ icon: OuterframePresentationIcon) {
         Task {
             try? await socket.send(ContentToBrowserMessage.setIcon(icon).encode())
+        }
+    }
+
+    func navigate(to url: URL) {
+        navigate(to: url, displayString: nil)
+    }
+
+    func navigate(to url: URL, displayString: String?) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.navigate(
+                url: url.absoluteString,
+                displayString: displayString
+            ).encode())
+        }
+    }
+
+    func openNewTab(with url: URL, displayString: String?) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.openNewTab(
+                url: url.absoluteString,
+                displayString: displayString
+            ).encode())
+        }
+    }
+
+    func openURLExternally(_ url: URL) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.openURLExternally(
+                url: url.absoluteString
+            ).encode())
         }
     }
 
@@ -560,6 +596,14 @@ final class OuterframeHost: SocketToBrowserDelegate {
         )
     }
 
+    func notifyAccessibilityTreeChanged(_ notification: OuterframeAccessibilityNotification) {
+        Task {
+            try? await socket.send(ContentToBrowserMessage.accessibilityTreeChanged(
+                notificationMask: notification.rawValue
+            ).encode())
+        }
+    }
+
     // MARK: - Pasteboard
 
     /// Sends a copy selected pasteboard response to the browser.
@@ -614,6 +658,19 @@ final class OuterframeHost: SocketToBrowserDelegate {
                         pending(false, [])
                     }
                 }
+            }
+        }
+    }
+
+    func sendHostSpecificMessage(name: String, payload: Data = Data()) {
+        Task {
+            do {
+                try await socket.send(ContentToBrowserMessage.hostSpecificMessage(
+                    name: name,
+                    payload: payload
+                ).encode())
+            } catch {
+                print("OuterframeHost: Failed to send host-specific message \(name): \(error)")
             }
         }
     }
@@ -689,12 +746,6 @@ final class OuterframeHost: SocketToBrowserDelegate {
                                     operationMask: operationMask,
                                     previewPNGData: previewPNGData,
                                     previewSize: previewSize)
-    }
-
-    func releaseDroppedFileAccess(_ accessID: UUID) {
-        Task {
-            try? await socket.send(ContentToBrowserMessage.releaseDroppedFileAccess(accessID: accessID).encode())
-        }
     }
 
     func sendFilePromiseWriteResponse(requestID: UUID,
