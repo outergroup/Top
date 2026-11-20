@@ -299,6 +299,27 @@
     elements.connectionLabel.textContent = label;
   }
 
+  const STREAM_NOTICE_DELAY_MS = 5000;
+  let streamProblemSince = 0, streamNoticeTimer = 0, streamNotice = null;
+
+  function reportStreamProblem(kind, label) {
+    if (!streamProblemSince) streamProblemSince = performance.now();
+    if (streamNotice?.kind === "error" && kind !== "error") return;
+    streamNotice = { kind, label, shown: streamNotice?.shown || false };
+    clearTimeout(streamNoticeTimer);
+    const wait = Math.max(0, STREAM_NOTICE_DELAY_MS - (performance.now() - streamProblemSince));
+    streamNoticeTimer = window.setTimeout(() => {
+      if (!streamProblemSince || !streamNotice) return;
+      streamNotice.shown = true;
+      if (!state.historical) setConnection(streamNotice.kind, streamNotice.label);
+    }, wait);
+  }
+
+  function reportStreamLive() {
+    clearTimeout(streamNoticeTimer); streamProblemSince = 0; streamNotice = null;
+    if (!state.historical) setConnection("live", "Live");
+  }
+
   function selectionQuery(selection = state.selection) {
     if (selection.mode === "fixed") {
       return { timeMode: "fixed", timeStart: selection.start.toFixed(3), timeEnd: selection.end.toFixed(3) };
@@ -493,6 +514,7 @@
     state.displayMetrics = { ...frame.metrics, processCount: frame.metrics.processCount + containers.length,
       visibleProcessCount: rows.length, threadCount: frame.metrics.threadCount + containers.reduce((sum, row) => sum + row.threads, 0) };
     updateMetrics();
+    if (streamNotice?.shown) return;
     const error = window.topEnvironments?.error();
     setConnection(error ? "error" : "live", error ? `Container discovery: ${error}` : "Live");
   }
@@ -502,7 +524,7 @@
     if (!state.historical) state.displayMetrics = frame.metrics;
     addCPUHistorySample(frame);
     updateMetrics(); chart.render();
-    state.liveFrame = frame;
+    state.liveFrame = frame; state.liveFrameAt = performance.now();
     if (!state.historical) renderLiveTable();
   }
 
@@ -529,13 +551,16 @@
     clearTimeout(state.reconnectTimer); state.streamController?.abort();
     const controller = new AbortController(); state.streamController = controller;
     const range = visibleRange(); state.requestedStart = range.start; state.requestedEnd = range.end;
-    setConnection("", "Connecting…");
+    const recovering = state.streamHasConnected;
+    reportStreamProblem("", "Connecting…");
     try {
       const response = await fetch(`/api/processes/stream?${queryForViewport(range.start, range.end)}`, {
         cache: "no-store", headers: { Accept: "application/octet-stream" }, signal: controller.signal
       });
       if (!response.ok || !response.body) throw new Error(`Stream unavailable (${response.status})`);
-      setConnection("live", "Live"); state.reconnectAttempt = 0;
+      reportStreamLive(); state.reconnectAttempt = 0; state.liveFrameAt = performance.now();
+      if (recovering) loadCPUHistory();
+      state.streamHasConnected = true;
       const reader = response.body.getReader(); let buffer = new Uint8Array(0);
       while (true) {
         const result = await reader.read(); if (result.done) break;
@@ -548,8 +573,9 @@
       throw new Error("Stream ended");
     } catch (error) {
       if (controller.signal.aborted || state.streamController !== controller) return;
-      setConnection("error", "Connection lost — reconnecting…"); console.warn("Top stream disconnected", error);
-      const delay = Math.min(1000 * 2 ** state.reconnectAttempt, 15000); state.reconnectAttempt += 1;
+      reportStreamProblem("error", "Connection lost — reconnecting…"); console.warn("Top stream disconnected", error);
+      const delay = state.reconnectAttempt ? Math.min(500 * 2 ** state.reconnectAttempt, 15000) : 250;
+      state.reconnectAttempt += 1;
       state.reconnectTimer = window.setTimeout(connectStream, delay);
     }
   }
@@ -1095,5 +1121,14 @@
     elements.connectionLabel.textContent = "Containers";
     elements.chart.closest("section")?.setAttribute("hidden", "");
     renderLiveTable();
-  } else { loadCPUHistory(); connectStream(); }
+  } else {
+    loadCPUHistory(); connectStream();
+    const resumeStream = () => {
+      if (document.hidden || performance.now() - (state.liveFrameAt || 0) < 2500) return;
+      state.reconnectAttempt = 0; connectStream();
+    };
+    document.addEventListener("visibilitychange", resumeStream);
+    window.addEventListener("pageshow", resumeStream);
+    window.addEventListener("online", resumeStream);
+  }
 })();

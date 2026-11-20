@@ -74,6 +74,14 @@ function decodeEnvironmentSnapshot(buffer) {
   let processes = new Map();
   let snapshot = null;
   let error = "";
+  let errorSince = 0;
+  const ERROR_NOTICE_DELAY_MS = 5000;
+
+  function noteError(message) {
+    if (!message) { errorSince = 0; error = ""; return; }
+    if (!errorSince) errorSince = Date.now();
+    error = Date.now() - errorSince >= ERROR_NOTICE_DELAY_MS ? message : "";
+  }
   const samples = new Map();
   let updatedAt = 0;
   let timer;
@@ -85,8 +93,11 @@ function decodeEnvironmentSnapshot(buffer) {
     return processes.get(pid) || null;
   }
 
+  let refreshing = false;
+
   async function refresh() {
-    if (stopped) return;
+    if (stopped || refreshing) return;
+    refreshing = true;
     if (!document.hidden) {
       controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -97,7 +108,7 @@ function decodeEnvironmentSnapshot(buffer) {
         if (!response.ok) throw new Error(`Environment discovery failed (${response.status})`);
         const result = decodeEnvironmentSnapshot(await response.arrayBuffer());
         snapshot = result;
-        error = result.errors.map(item => `${item.runtime}: ${item.error}`).join("; ");
+        noteError(result.errors.map(item => `${item.runtime}: ${item.error}`).join("; "));
         const alive = new Set();
         for (const process of result.processes) {
           if (process.target === "host" || process.hostPID) continue;
@@ -115,12 +126,13 @@ function decodeEnvironmentSnapshot(buffer) {
           .map(process => [process.hostPID, { ...process, environment: names.get(process.target) || process.target }]));
         updatedAt = Date.now();
       } catch (failure) {
-        error = failure.message; snapshot = null; processes.clear();
+        if (!stopped) noteError(failure.message);
       } finally {
         clearTimeout(timeout);
         window.dispatchEvent(new Event("top-environments-changed"));
       }
     }
+    refreshing = false;
     if (!stopped) timer = setTimeout(refresh, 1000);
   }
 
@@ -148,7 +160,10 @@ function decodeEnvironmentSnapshot(buffer) {
     controller?.abort();
   });
   window.addEventListener("pageshow", event => {
-    if (event.persisted) { stopped = false; refresh(); }
+    if (event.persisted) { stopped = false; clearTimeout(timer); refresh(); }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !stopped) { clearTimeout(timer); refresh(); }
   });
   refresh();
 })();

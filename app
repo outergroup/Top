@@ -231,6 +231,7 @@ cmd_build_frontend() {
     install -m 0644 "${ROOT}/Resources/TopWeb/top.css" "${STAGE_ROOT}/web/top.css"
     install -m 0644 "${ROOT}/Resources/TopWeb/top.js" "${STAGE_ROOT}/web/top.js"
     install -m 0644 "${ROOT}/Resources/TopWeb/environments.js" "${STAGE_ROOT}/web/environments.js"
+    install -m 0644 "${ROOT}/Resources/TopWeb/app-icon.png" "${STAGE_ROOT}/web/app-icon.png"
     install -m 0644 "${ROOT}/app-icon.png" "${STAGE_ROOT}/app-icon.png"
 }
 
@@ -272,6 +273,7 @@ build_local_backend() {
     install -m 0644 "${STAGE_ROOT}/web/top.css" "${resources}/web/top.css"
     install -m 0644 "${STAGE_ROOT}/web/top.js" "${resources}/web/top.js"
     install -m 0644 "${STAGE_ROOT}/web/environments.js" "${resources}/web/environments.js"
+    install -m 0644 "${STAGE_ROOT}/web/app-icon.png" "${resources}/web/app-icon.png"
     install -m 0644 "${STAGE_ROOT}/app-icon.png" "${resources}/app-icon.png"
 
     local info_plist="${contents}/Info.plist"

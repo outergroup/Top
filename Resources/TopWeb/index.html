@@ -16,7 +16,7 @@
       <div class="command-bar">
         <div class="command-actions">
           <button id="stop-button" class="command-button" disabled title="Stop selected process">
-            <span class="button-symbol stop-symbol" aria-hidden="true">×</span><span>Stop</span>
+            <span class="button-symbol stop-symbol" aria-hidden="true"></span><span>Stop</span>
           </button>
           <button id="inspect-button" class="command-button" disabled title="Inspect selected process">
             <span class="button-symbol info-symbol" aria-hidden="true">i</span><span>Inspect</span>
@@ -24,7 +24,7 @@
         </div>
         <label class="search-field">
           <span class="search-symbol" aria-hidden="true"></span>
-          <input id="search" type="search" inputmode="search" autocomplete="off" spellcheck="false" placeholder="Search" aria-label="Search processes">
+          <input id="search" type="search" inputmode="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Search" aria-label="Search processes">
         </label>
       </div>
 
@@ -46,7 +46,7 @@
         </div>
       </div>
 
-      <div id="connection" class="connection-status" role="status">
+      <div id="connection" class="connection-status live" role="status">
         <span class="connection-dot"></span><span id="connection-label">Connecting…</span>
       </div>
     </section>

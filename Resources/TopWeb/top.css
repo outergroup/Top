@@ -17,7 +17,6 @@
   --row-move-duration: 250ms;
   --core-animation-default: cubic-bezier(.25, .1, .25, 1);
   --core-animation-ease-in-out: cubic-bezier(.42, 0, .58, 1);
-  --outerloop-overlay-clearance: 0px;
   --pid-column-min-width: 64px;
   --compact-table-min-width: calc(632px + var(--pid-column-min-width));
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
@@ -50,6 +49,9 @@ button { border: 0; background: none; }
 .command-button:disabled { color: var(--secondary-text); opacity: .62; }
 .button-symbol { width: 16px; height: 16px; display: inline-grid; place-items: center; border: 1.5px solid currentColor; border-radius: 50%; font-size: 12px; font-weight: 600; line-height: 1; }
 .info-symbol { font-family: Georgia, serif; font-size: 11px; font-weight: 700; }
+.stop-symbol { position: relative; }
+.stop-symbol::before, .stop-symbol::after { position: absolute; left: 50%; top: 50%; width: 8px; height: 1.5px; border-radius: 1px; background: currentColor; content: ""; transform: translate(-50%, -50%) rotate(45deg); }
+.stop-symbol::after { transform: translate(-50%, -50%) rotate(-45deg); }
 
 .search-field {
   width: min(280px, 38vw); height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 13px;
@@ -224,7 +226,7 @@ dialog p { margin: 10px 0 24px; color: var(--secondary-text); font-size: 13px; l
   .system-metrics {
     grid-template-columns: minmax(max-content, 112px) minmax(180px, 1fr) minmax(76px, 92px);
     gap: 10px; align-items: stretch;
-    padding: 8px 10px calc(8px + var(--outerloop-overlay-clearance));
+    padding: 8px 10px;
   }
   .cpu-stats {
     display: grid; grid-template-columns: max-content max-content; column-gap: 6px;
@@ -248,7 +250,7 @@ dialog p { margin: 10px 0 24px; color: var(--secondary-text); font-size: 13px; l
   .top-app { grid-template-rows: minmax(112px, 1fr) 156px; }
   .system-metrics {
     grid-template-columns: minmax(max-content, .9fr) minmax(128px, 1.55fr) minmax(64px, .75fr);
-    gap: 5px; padding: 8px 7px calc(8px + var(--outerloop-overlay-clearance));
+    gap: 5px; padding: 8px 7px;
   }
   .stat-row { font-size: 10px; }
   .system-counts > div > span:last-child { white-space: normal; }
@@ -259,15 +261,7 @@ dialog p { margin: 10px 0 24px; color: var(--secondary-text); font-size: 13px; l
 }
 
 @media (hover: none) and (pointer: coarse) {
-  :root { --outerloop-overlay-clearance: 18px; }
-}
-
-@media (hover: none) and (pointer: coarse) and (orientation: portrait) {
-  :root { --outerloop-overlay-clearance: 20px; }
-}
-
-@media (hover: none) and (pointer: coarse) and (orientation: landscape) {
-  :root { --outerloop-overlay-clearance: 16px; }
+  .top-app { padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - 8px)); }
 }
 
 @media (prefers-color-scheme: dark) {
